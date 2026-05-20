@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+templates/technical_design.xml
+Describes the expected output structure of the Architect agent.
+-->
+<technical_design>
+  <tech_stack>
+    <language>Python 3.11+</language>
+    <framework>FastAPI</framework>
+    <database>SQLite (sqlite3 stdlib)</database>
+    <ui>HTML + JavaScript fetch() via GET / HTMLResponse</ui>
+    <server>uvicorn</server>
+  </tech_stack>
+
+  <components>
+    <!-- Max 5 components; each maps to a route or logical section -->
+    <component id="1">
+      <name></name>
+      <description></description>
+      <routes></routes>
+    </component>
+  </components>
+
+  <data_flow>
+    <!-- Step-by-step description of how a request flows through the system -->
+    <step id="1"></step>
+    <step id="2"></step>
+    <step id="3"></step>
+  </data_flow>
+
+  <file_structure>
+    <!-- Single file: generated_app.py -->
+    <file>generated_app.py</file>
+  </file_structure>
+
+  <metadata>
+    <max_words>300</max_words>
+    <agent>architect</agent>
+    <prompt_key>architect_v1</prompt_key>
+  </metadata>
+</technical_design>

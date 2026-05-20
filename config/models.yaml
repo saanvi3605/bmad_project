@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# BMAD Pipeline — Centralized Model & Runtime Configuration
+# config/models.yaml
+#
+# Single source of truth for:
+#   - LLM provider, model, and inference parameters
+#   - Retry limits for the two feedback loops
+#   - Executor subprocess settings
+#   - Session archiving
+#   - Cost coefficients used by observability.py
+#
+# Do NOT put secrets here. API keys live in .env only.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Heavy model — used by: planner, architect, developer, reviewer
+llm:
+  provider: groq
+  model: llama-3.3-70b-versatile
+  temperature: 0.1
+  max_tokens: 4096
+  request_timeout: 120
+
+# Light model — used by: tester, test_writer (separate token quota)
+llm_light:
+  provider: groq
+  model: llama-3.1-8b-instant
+  temperature: 0.1
+  max_tokens: 2048
+  request_timeout: 60
+
+# ── Reviewer ─────────────────────────────────────────────────────────────────
+# Disable when on a low-TPM model (e.g. llama-3.1-8b-instant) — the generated
+# code alone exceeds the 6 000-token per-request limit on free tier.
+# The deterministic validator still runs regardless of this setting.
+reviewer:
+  enabled: false  # disabled — 8b model cannot review large generated code within TPM limits
+
+# ── Retry / loop limits ───────────────────────────────────────────────────────
+retry_limits:
+  # Validator → Developer loop.  Matches current should_fix() ceiling.
+  validator_max_retries: 2
+  # Reviewer → Developer loop.  Matches current should_retry() ceiling.
+  reviewer_max_retries: 2
+
+# ── Executor subprocess settings ─────────────────────────────────────────────
+executor:
+  # Seconds to wait after launching the generated app before checking
+  # whether the process is still alive.  Streamlit needs more than the
+  # original 5s used for FastAPI because Streamlit's dev-server startup
+  # (Tornado init + component registration) takes 6-8s on a cold start.
+  startup_wait_seconds: 8
+  # Path written by executor_agent and read by the Streamlit UI for download.
+  output_file: outputs/generated_app.py
+  test_output_file: outputs/test_generated_app.py
+
+# ── Session archiving ─────────────────────────────────────────────────────────
+session:
+  # When true, executor_agent copies every pipeline artifact into a
+  # per-session subdirectory so runs can be compared or replayed.
+  archive_outputs: true
+  # Parent directory for per-session archives.  A UUID subdirectory is
+  # created inside this directory for each pipeline run.
+  output_dir: outputs/sessions/
+
+# ── Observability / cost tracking ────────────────────────────────────────────
+#
+# Cost coefficients for llama-3.3-70b-versatile (heavy model).
+# Light model (llama-3.1-8b-instant) costs are negligible ($0.05/$0.08 per M).
+# Units: USD per 1,000,000 tokens.
+observability:
+  cost_per_million_input_tokens: 0.59
+  cost_per_million_output_tokens: 0.79
+  # Whether to compute and log cost estimates.  Set false to skip arithmetic.
+  track_cost: true
+  # Whether to attach per-agent token counts to the agent_log list in state.
+  track_tokens: true

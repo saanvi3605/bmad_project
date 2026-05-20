@@ -1,0 +1,79 @@
+# skills/code_review.yaml
+# BMAD Skill Definition — Code Review
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Reviewer agent (agents_impl/reviewer_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: code_review
+version: "1.0"
+display_name: "LLM-Based Code Review"
+description: >
+  LLM-powered review of generated Python code against eight correctness and
+  runnability criteria. Produces a structured APPROVED/FEEDBACK verdict.
+  Rejected code is sent back to the Developer with specific actionable
+  feedback (max 2 retries).
+
+agents:
+  - reviewer
+
+inputs:
+  technical_design:
+    type: str
+    required: true
+    description: "Technical architecture from the Architect agent"
+  code:
+    type: str
+    required: true
+    description: "Generated Python source from the Developer agent"
+
+outputs:
+  review_approved:
+    type: bool
+    description: "True iff LLM response contains 'APPROVED: YES'"
+  review_feedback:
+    type: str
+    description: "Text following the 'FEEDBACK:' label in the LLM response"
+  review_attempts:
+    type: int
+    description: "Cumulative attempt counter, incremented each call"
+
+review_criteria:
+  - id: 1
+    description: "Valid, executable Python with no SyntaxErrors"
+  - id: 2
+    description: "Correct FastAPI usage"
+  - id: 3
+    description: "SQLite only (not MySQL or PostgreSQL)"
+  - id: 4
+    description: "uvicorn.run(...) inside if __name__ == '__main__':"
+  - id: 5
+    description: "GET / route returning HTMLResponse"
+  - id: 6
+    description: "All imports present and correct"
+  - id: 7
+    description: "All HTML inside Python strings — not raw HTML outside strings"
+  - id: 8
+    description: "Single self-contained file with no fake section headers"
+
+response_format:
+  approved_token: "APPROVED: YES"
+  rejected_token: "APPROVED: NO"
+  feedback_label: "FEEDBACK:"
+  parsing_note: >
+    approved is detected case-insensitively via 'APPROVED: YES' in text.upper().
+    feedback is extracted as text[feedback_start + 9:].strip().
+    If no FEEDBACK: label is found, the entire response is used as feedback.
+
+routing:
+  on_approved: Executor
+  on_rejected_retry: Developer
+  on_rejected_max_retries: Executor
+  max_attempts: 2
+  counter_field: review_attempts
+  counter_location: "reviewer_agent() — incremented inside agent, not routing function"
+
+model:
+  provider: groq
+  model_name: llama-3.3-70b-versatile
+  temperature: 0.1
+  max_tokens: 4096

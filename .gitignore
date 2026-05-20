@@ -1,0 +1,46 @@
+# Environment — never commit secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Pipeline outputs — generated per-run, not source code
+outputs/generated_app.py
+outputs/test_generated_app.py
+outputs/sessions/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Streamlit cache
+.streamlit/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/

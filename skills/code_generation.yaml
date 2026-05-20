@@ -1,0 +1,74 @@
+# skills/code_generation.yaml
+# BMAD Skill Definition — Code Generation
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Developer agent (agents_impl/developer_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: code_generation
+version: "1.0"
+display_name: "FastAPI Application Code Generation"
+description: >
+  Generates a complete, single-file, directly runnable FastAPI + SQLite
+  Python application from a technical design specification. Supports three
+  invocation modes: clean generation, validator-error correction, and
+  reviewer-feedback correction.
+
+agents:
+  - developer
+
+inputs:
+  technical_design:
+    type: str
+    required: true
+    description: "Technical architecture produced by the Architect agent"
+  feedback_section:
+    type: str
+    required: false
+    default: ""
+    description: >
+      Empty on clean generation. Contains validation error or review feedback
+      on correction passes.
+
+outputs:
+  code:
+    type: str
+    description: >
+      Sanitized Python source code for a FastAPI application. Guaranteed to
+      have been processed by sanitize_code() before storage.
+
+invocation_modes:
+  clean:
+    prompt_key: developer_clean_v1
+    trigger: "No validation error and no pending review feedback"
+  validation_fix:
+    prompt_key: developer_validation_fix_v1
+    trigger: "state.validation_error is set AND state.validation_passed is False"
+  review_fix:
+    prompt_key: developer_review_fix_v1
+    trigger: "state.review_feedback is set AND state.review_approved is False"
+
+technology_constraints:
+  framework: FastAPI
+  database: "SQLite via sqlite3 stdlib — no SQLAlchemy, no ORM"
+  output_format: "Single Python file (generated_app.py)"
+  html_handling: "All HTML inside Python string variables — never raw HTML"
+  ui_pattern: "JavaScript fetch() calls to API endpoints — no Jinja2, no form submit"
+  entry_point: "uvicorn.run(...) inside if __name__ == '__main__':"
+
+post_processing:
+  function: sanitize_code
+  module: core.sanitizer
+  description: >
+    Every LLM response is passed through sanitize_code() which enforces
+    required imports, removes disallowed libraries, strips Jinja2 syntax,
+    normalises uvicorn.run(), and injects init_db() if missing.
+
+model:
+  provider: groq
+  model_name: llama-3.3-70b-versatile
+  temperature: 0.1
+  max_tokens: 4096
+
+retry_policy:
+  validator_loop_max: 2   # controlled by should_fix() in validator_agent.py
+  reviewer_loop_max: 2    # controlled by should_retry() in reviewer_agent.py

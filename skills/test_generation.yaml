@@ -1,0 +1,113 @@
+# skills/test_generation.yaml
+# BMAD Skill Definition — Test Generation
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Tester agent (agents_impl/tester_agent.py)
+#          TestWriter agent (agents_impl/test_writer_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: test_generation
+version: "1.0"
+display_name: "Test Case Generation and Pytest File Creation"
+description: >
+  A two-stage test generation skill. The Tester produces human-readable test
+  case specifications (TC-XX format). The TestWriter converts those specs plus
+  the actual generated code into a runnable pytest file, assembling it from a
+  hardcoded fixture block and LLM-generated test functions.
+
+agents:
+  - tester
+  - test_writer
+
+# ── Stage 1: Tester ──────────────────────────────────────────────────────────
+
+tester:
+  inputs:
+    technical_design:
+      type: str
+      required: true
+    code:
+      type: str
+      required: true
+  outputs:
+    test_cases:
+      type: str
+      description: "Structured TC-XX test case specifications"
+  output_format:
+    max_cases: 10
+    case_schema: |
+      - ID: TC-XX
+      - Type: unit / integration / edge
+      - Description: <what is being tested>
+      - Input: <example input>
+      - Expected Output: <expected result>
+  test_types:
+    - unit: "Individual function/route behaviour"
+    - integration: "End-to-end request/response flow"
+    - edge: "Empty inputs, invalid data, missing fields"
+
+# ── Stage 2: TestWriter ───────────────────────────────────────────────────────
+
+test_writer:
+  inputs:
+    code:
+      type: str
+      required: true
+    test_cases:
+      type: str
+      required: true
+  outputs:
+    test_file:
+      type: str
+      description: "Path to the written pytest file"
+  fixture_block:
+    description: >
+      Hardcoded preamble injected at the top of every generated test file.
+      NEVER modified by the LLM. Contains imports, TestClient setup,
+      database isolation, and gc cleanup.
+    content: |
+      import pytest
+      import os
+      import sqlite3
+      import gc
+      from starlette.testclient import TestClient
+      from generated_app import app, init_db
+
+
+      @pytest.fixture
+      def client():
+          os.environ["DB_PATH"] = "test_app.db"
+          init_db()
+          with TestClient(app) as c:
+              yield c
+          gc.collect()
+          for _db in ("test_app.db", "app.db"):
+              try:
+                  os.remove(_db)
+              except (PermissionError, FileNotFoundError):
+                  pass
+  post_processing:
+    description: >
+      Applied to LLM output before assembling the final file. All transforms
+      are verbatim from the original implementation.
+    transforms:
+      - strip_markdown_fences
+      - remove_anyio_asyncio_decorators
+      - replace_async_def_test_with_def_test
+      - replace_await_client_with_client
+      - replace_await_ac_with_client
+      - remove_import_anyio
+      - remove_import_asyncio
+      - remove_async_with_AsyncClient_blocks
+      - fix_exact_count_assertions  # == N → >= 1 (except == 0 → == [])
+      - extract_test_functions_only  # strip everything above first def test_
+      - dedent_test_functions
+  output_path:
+    config_key: "executor.test_output_file"
+    default: "outputs/test_generated_app.py"
+  run_command: "python -m pytest outputs/test_generated_app.py -v"
+
+model:
+  provider: groq
+  model_name: llama-3.3-70b-versatile
+  temperature: 0.1
+  max_tokens: 4096

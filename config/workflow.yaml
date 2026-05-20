@@ -1,0 +1,98 @@
+# config/workflow.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# BMAD Pipeline — Workflow Topology Configuration
+# Documents the graph structure, node names, and routing decisions.
+# This file is documentation — the actual graph lives in orchestration/graph.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+pipeline_name: "BMAD LangGraph Pipeline"
+version: "1.0"
+
+# Execution entry point
+entry_point: Planner
+
+# Linear edges (no routing decision needed)
+linear_edges:
+  - from: Planner
+    to: Architect
+  - from: Architect
+    to: Developer
+  - from: Developer
+    to: Validator
+  - from: Tester
+    to: Reviewer
+  - from: Executor
+    to: TestWriter
+  - from: TestWriter
+    to: END
+
+# Conditional routing — validator feedback loop
+validator_routing:
+  source: Validator
+  routing_fn: should_fix
+  routes:
+    passed: Tester
+    fix: Developer
+    max_attempts: Tester
+  loop_description: >
+    When validation fails, Developer receives the error message in
+    state["validation_error"] and regenerates the code with an explicit
+    fix prompt. After 2 failed attempts (validation_attempts >= 2),
+    the pipeline proceeds to Tester anyway.
+
+# Conditional routing — reviewer feedback loop
+reviewer_routing:
+  source: Reviewer
+  routing_fn: should_retry
+  routes:
+    approved: Executor
+    retry: Developer
+    max_retries: Executor
+  loop_description: >
+    When review fails, Developer receives the reviewer feedback in
+    state["review_feedback"] and regenerates the code. After 2 failed
+    attempts (review_attempts >= 2), the pipeline proceeds to Executor anyway.
+
+# Node inventory with responsible module
+nodes:
+  Planner:
+    module: agents_impl.planner_agent
+    fn: planner_agent
+    type: llm
+    output_fields: [functional_spec, review_attempts]
+  Architect:
+    module: agents_impl.architect_agent
+    fn: architect_agent
+    type: llm
+    output_fields: [technical_design]
+  Developer:
+    module: agents_impl.developer_agent
+    fn: developer_agent
+    type: llm
+    output_fields: [code]
+    modes: [clean, validation_fix, review_fix]
+  Validator:
+    module: agents_impl.validator_agent
+    fn: validator_agent
+    type: deterministic
+    output_fields: [validation_passed, validation_error]
+  Tester:
+    module: agents_impl.tester_agent
+    fn: tester_agent
+    type: llm
+    output_fields: [test_cases]
+  Reviewer:
+    module: agents_impl.reviewer_agent
+    fn: reviewer_agent
+    type: llm
+    output_fields: [review_approved, review_feedback, review_attempts]
+  Executor:
+    module: agents_impl.executor_agent
+    fn: executor_agent
+    type: subprocess
+    output_fields: [execution_result, execution_error, output_dir]
+  TestWriter:
+    module: agents_impl.test_writer_agent
+    fn: test_writer_agent
+    type: llm
+    output_fields: [test_file]

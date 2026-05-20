@@ -1,0 +1,110 @@
+# skills/code_validation.yaml
+# BMAD Skill Definition — Code Validation
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Validator agent (agents_impl/validator_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: code_validation
+version: "1.0"
+display_name: "Deterministic Code Quality Validation"
+description: >
+  Runs six sequential, deterministic, pure-Python checks against generated
+  application code. No LLM is involved. Returns pass/fail with a
+  human-readable reason that is fed back to the Developer on failure.
+
+agents:
+  - validator
+
+inputs:
+  code:
+    type: str
+    required: true
+    description: "Python source code to validate"
+
+outputs:
+  validation_passed:
+    type: bool
+    description: "True iff all six checks pass"
+  validation_error:
+    type: str
+    nullable: true
+    description: "Human-readable failure description, or None on pass"
+
+checks:
+  - id: 1
+    name: ast_syntax_parse
+    description: "ast.parse(code) — catches Python syntax errors"
+    failure_prefix: "SyntaxError on line"
+
+  - id: 2
+    name: py_compile_subprocess
+    description: >
+      Writes code to a temp file and runs python -m py_compile with a 15s
+      timeout. Catches encoding errors and additional compile-time issues
+      that ast.parse misses.
+    failure_prefix: "Compile error:"
+
+  - id: 3
+    name: required_pattern_presence
+    description: "All four FastAPI structural patterns must be present"
+    patterns:
+      - pattern: '@app.get("/"'
+        message: "Missing GET / route"
+      - pattern: "HTMLResponse"
+        message: "Missing HTMLResponse usage"
+      - pattern: "uvicorn.run("
+        message: "Missing uvicorn.run(...)"
+      - pattern: "if __name__"
+        message: "Missing if __name__ == '__main__': block"
+
+  - id: 4
+    name: disallowed_library_detection
+    description: "No SQLAlchemy or other banned ORMs/drivers may remain"
+    disallowed_substrings:
+      - sqlalchemy
+      - create_engine
+      - sessionmaker
+      - declarative_base
+      - from databases
+      - import asyncpg
+      - import psycopg2
+
+  - id: 5
+    name: nameerror_detection_ast
+    description: >
+      Walks AST to collect defined module-level names, then checks function
+      argument type annotations for references to undefined names.
+      Best-effort — AST walk exceptions are silently swallowed.
+    known_builtins:
+      - int
+      - str
+      - float
+      - bool
+      - list
+      - dict
+      - set
+      - None
+      - True
+      - False
+      - Optional
+      - List
+      - Dict
+
+  - id: 6
+    name: jinja2_syntax_in_html
+    description: >
+      Scans HTML string sections (lines after HTML = ...) for Jinja2 tokens.
+      Fails with actionable message directing Developer to use fetch() instead.
+    jinja2_tokens:
+      - "{%"
+      - "%}"
+      - "{{"
+      - "}}"
+
+routing:
+  on_pass: Tester
+  on_fail_retry: Developer
+  on_fail_max_attempts: Tester
+  max_attempts: 2
+  counter_field: validation_attempts
+  counter_location: "should_fix() — incremented inside routing function, not agent"

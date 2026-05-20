@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+templates/code_review_response.xml
+Describes the expected response format of the Reviewer agent.
+The LLM is instructed to use this exact structure.
+-->
+<code_review_response>
+  <verdict>
+    <!-- Must be exactly "YES" or "NO" -->
+    <!-- Parsed as: "APPROVED: YES" in text.upper() -->
+    <approved>YES</approved>
+  </verdict>
+
+  <feedback>
+    <!--
+    When approved: "Code meets all requirements."
+    When rejected: list of specific, actionable issues.
+    Parsed as text after "FEEDBACK:" label.
+    -->
+    <text></text>
+  </feedback>
+
+  <review_criteria>
+    <criterion id="1">Valid, executable Python with no SyntaxErrors</criterion>
+    <criterion id="2">Correct FastAPI usage</criterion>
+    <criterion id="3">SQLite only (not MySQL or PostgreSQL)</criterion>
+    <criterion id="4">uvicorn.run(...) inside if __name__ == '__main__':</criterion>
+    <criterion id="5">GET / route returning HTMLResponse</criterion>
+    <criterion id="6">All imports present and correct</criterion>
+    <criterion id="7">All HTML inside Python strings — not raw HTML outside strings</criterion>
+    <criterion id="8">Single self-contained file with no fake section headers</criterion>
+  </review_criteria>
+
+  <metadata>
+    <agent>reviewer</agent>
+    <prompt_key>reviewer_v1</prompt_key>
+    <max_retries>2</max_retries>
+    <counter_field>review_attempts</counter_field>
+    <counter_location>reviewer_agent() — incremented inside agent</counter_location>
+  </metadata>
+</code_review_response>

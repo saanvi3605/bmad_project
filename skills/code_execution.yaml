@@ -1,0 +1,81 @@
+# skills/code_execution.yaml
+# BMAD Skill Definition — Code Execution
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Executor agent (agents_impl/executor_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: code_execution
+version: "1.0"
+display_name: "Generated Application Execution Verification"
+description: >
+  Writes the generated Python application to disk at the configured output
+  path, launches it as a subprocess, waits for the startup period, then
+  polls the process to determine whether the application started successfully
+  or crashed. Reports results via state fields. No LLM is involved.
+
+agents:
+  - executor
+
+inputs:
+  code:
+    type: str
+    required: true
+    description: "Final sanitized Python source code"
+  session_id:
+    type: str
+    required: false
+    description: "UUID for session archiving (optional)"
+
+outputs:
+  execution_result:
+    type: str
+    description: >
+      "App started successfully and is running." if process is alive after
+      startup_wait_seconds, or stdout content if process exited early.
+  execution_error:
+    type: str
+    description: >
+      Empty string on success. stderr output or exception message on failure.
+  output_dir:
+    type: str
+    nullable: true
+    description: "Absolute path to per-session archive directory"
+
+execution_model:
+  mechanism: subprocess.Popen
+  command: ["python", "{output_path}"]
+  stdout: PIPE
+  stderr: PIPE
+  text_mode: true
+  startup_wait_config_key: "executor.startup_wait_seconds"
+  startup_wait_default: 8
+  success_condition: "process.poll() is None after startup_wait_seconds"
+  on_success: "terminate() the process; report 'App started successfully'"
+  on_failure: "communicate() to collect stdout/stderr; report them"
+
+output_paths:
+  app_output:
+    config_key: "executor.output_file"
+    default: "outputs/generated_app.py"
+  test_output:
+    config_key: "executor.test_output_file"
+    default: "outputs/test_generated_app.py"
+
+archiving:
+  enabled_config_key: "session.archive_outputs"
+  archive_dir_config_key: "session.output_dir"
+  archive_dir_default: "outputs/sessions/"
+  archive_structure: "outputs/sessions/{session_id}/generated_app.py"
+  state_field: "output_dir"
+
+error_handling:
+  strategy: >
+    All subprocess and file I/O errors are caught by a top-level
+    try/except Exception block. execution_result is set to "" and
+    execution_error to str(e). The pipeline always completes.
+
+startup_wait_rationale: >
+  8 seconds (up from original 5s) provides buffer for FastAPI/uvicorn cold
+  starts, which typically complete in 1-3s on modern hardware but may take
+  longer in CI environments or resource-constrained hosts. The value is
+  configurable in models.yaml without code changes.

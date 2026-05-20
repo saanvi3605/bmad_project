@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+templates/functional_spec.xml
+Describes the expected output structure of the Planner agent.
+Used as documentation and for future prompt externalization.
+-->
+<functional_spec>
+  <overview>
+    <!-- 2-3 sentences describing the project at a high level -->
+    <text></text>
+  </overview>
+
+  <requirements>
+    <!-- Numbered list, max 6 items; each is a concrete, testable requirement -->
+    <requirement id="1"></requirement>
+    <requirement id="2"></requirement>
+    <requirement id="3"></requirement>
+    <requirement id="4"></requirement>
+    <requirement id="5"></requirement>
+    <requirement id="6"></requirement>
+  </requirements>
+
+  <constraints>
+    <!-- Max 4 bullet points; assumptions, scope limits, tech constraints -->
+    <constraint></constraint>
+    <constraint></constraint>
+    <constraint></constraint>
+    <constraint></constraint>
+  </constraints>
+
+  <metadata>
+    <max_words>300</max_words>
+    <agent>planner</agent>
+    <prompt_key>planner_v1</prompt_key>
+  </metadata>
+</functional_spec>

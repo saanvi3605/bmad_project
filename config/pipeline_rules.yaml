@@ -1,0 +1,39 @@
+# config/pipeline_rules.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# BMAD Pipeline — Hard Rules Appended to Every User Request
+#
+# These rules are concatenated to the user's raw request before it enters
+# the pipeline.  They constrain the LLM agents to produce only:
+#   - Single-file FastAPI applications
+#   - SQLite via sqlite3 stdlib (no ORMs)
+#   - No authentication unless the user explicitly asked for it
+#   - No multi-file or external-service architectures
+#
+# Loaded by: streamlit_app.py and main.py via core/config.py (or direct YAML load)
+# ─────────────────────────────────────────────────────────────────────────────
+
+pipeline_rules:
+  description: "Hard constraints appended to every user request"
+  rules:
+    - "Use Streamlit as the ONLY UI framework — no FastAPI, no Flask, no uvicorn."
+    - "Use SQLite with the sqlite3 standard library ONLY — no SQLAlchemy, no ORM."
+    - "The final output must be a SINGLE Python file runnable with: streamlit run generated_app.py"
+    - "Do NOT add authentication or login unless the user explicitly asked for it."
+    - "Do NOT add any features beyond what the user requested."
+    - "Use st.set_page_config() as the first Streamlit call."
+    - "Use st.form() + st.form_submit_button() for all data entry."
+    - "Use st.session_state and st.rerun() for state management."
+    - "Use st.dataframe() with pandas for all tabular data display."
+    - "Cache DB reads with @st.cache_data and clear after writes."
+
+prompt_suffix: |
+
+  PIPELINE CONSTRAINTS (non-negotiable):
+  - Framework: Streamlit only (no FastAPI, no uvicorn)
+  - Database: SQLite via sqlite3 stdlib only (no ORMs)
+  - Output: single runnable Python file (streamlit run generated_app.py)
+  - No auth/login unless explicitly requested
+  - No extra features beyond the request
+  - Must call st.set_page_config() first
+  - Use st.form() for all data entry
+  - Use st.rerun() after every DB write

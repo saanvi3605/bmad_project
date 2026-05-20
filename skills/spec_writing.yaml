@@ -1,0 +1,77 @@
+# skills/spec_writing.yaml
+# BMAD Skill Definition — Specification Writing
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Planner agent (agents_impl/planner_agent.py)
+#          Architect agent (agents_impl/architect_agent.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: spec_writing
+version: "1.0"
+display_name: "Functional Specification and Technical Design Writing"
+description: >
+  A two-stage specification skill. The Planner writes a concise functional
+  spec (requirements, constraints) from the user request. The Architect
+  converts that spec into a technical design (tech stack, components, data
+  flow, file structure).
+
+agents:
+  - planner
+  - architect
+
+# ── Stage 1: Planner ──────────────────────────────────────────────────────────
+
+planner:
+  inputs:
+    user_request:
+      type: str
+      required: true
+  outputs:
+    functional_spec:
+      type: str
+      description: "Structured functional spec with overview, requirements, constraints"
+    review_attempts:
+      type: int
+      description: "Reset to 0 at start of pipeline"
+  output_constraints:
+    max_words: 300
+    sections:
+      - "Project overview (2-3 sentences)"
+      - "Core functional requirements (numbered, max 6)"
+      - "Key constraints and assumptions (max 4 bullet points)"
+  anti_patterns:
+    - "Do NOT add auth/login unless explicitly requested"
+    - "Do NOT invent features beyond the user request"
+
+# ── Stage 2: Architect ────────────────────────────────────────────────────────
+
+architect:
+  inputs:
+    functional_spec:
+      type: str
+      required: true
+  outputs:
+    technical_design:
+      type: str
+      description: "Tech stack, component breakdown, data flow, file structure"
+  output_constraints:
+    max_words: 300
+    sections:
+      - "Tech stack (language, framework, database, UI)"
+      - "Component breakdown (max 5 components)"
+      - "Data flow (step-by-step)"
+      - "File structure (tree format)"
+  technology_constraints:
+    framework: FastAPI
+    database: SQLite
+    ui: "HTML dashboard via GET / route"
+    external_services: none
+  anti_patterns:
+    - "Do NOT design auth unless explicitly requested"
+    - "Do NOT design components not in the functional spec"
+    - "No external services"
+
+model:
+  provider: groq
+  model_name: llama-3.3-70b-versatile
+  temperature: 0.1
+  max_tokens: 4096

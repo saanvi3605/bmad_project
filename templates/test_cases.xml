@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+templates/test_cases.xml
+Describes the expected output structure of the Tester agent.
+The LLM is instructed to produce TC-XX formatted test cases.
+-->
+<test_cases>
+  <!-- Max 10 test cases; all types: unit, integration, edge -->
+
+  <test_case id="TC-01">
+    <type>unit</type>
+    <description>What is being tested</description>
+    <input>Example input value or payload</input>
+    <expected_output>Expected response or side-effect</expected_output>
+  </test_case>
+
+  <test_case id="TC-02">
+    <type>integration</type>
+    <description>End-to-end request/response flow</description>
+    <input>HTTP request details</input>
+    <expected_output>HTTP response details</expected_output>
+  </test_case>
+
+  <test_case id="TC-03">
+    <type>edge</type>
+    <description>Edge case: empty input, invalid data, or missing fields</description>
+    <input>Malformed or boundary-value input</input>
+    <expected_output>Error response or graceful degradation</expected_output>
+  </test_case>
+
+  <metadata>
+    <max_cases>10</max_cases>
+    <agent>tester</agent>
+    <prompt_key>tester_v1</prompt_key>
+    <consumer_agent>test_writer</consumer_agent>
+  </metadata>
+</test_cases>
