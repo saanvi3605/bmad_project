@@ -4,7 +4,7 @@
 #
 # These rules are concatenated to the user's raw request before it enters
 # the pipeline.  They constrain the LLM agents to produce only:
-#   - Single-file FastAPI applications
+#   - Single-file Streamlit applications
 #   - SQLite via sqlite3 stdlib (no ORMs)
 #   - No authentication unless the user explicitly asked for it
 #   - No multi-file or external-service architectures
@@ -25,6 +25,11 @@ pipeline_rules:
     - "Use st.session_state and st.rerun() for state management."
     - "Use st.dataframe() with pandas for all tabular data display."
     - "Cache DB reads with @st.cache_data and clear after writes."
+    - "Use st.columns() to display metrics, KPIs, or related inputs side by side."
+    - "Use st.tabs() to separate distinct sections (e.g. Dashboard / Add / Analytics)."
+    - "Use st.metric() for all numeric totals, counts, and KPIs."
+    - "Use st.sidebar for navigation or filters when the app has multiple views."
+    - "Add a meaningful page title and a one-line st.caption() describing the app."
 
 prompt_suffix: |
 
@@ -37,3 +42,5 @@ prompt_suffix: |
   - Must call st.set_page_config() first
   - Use st.form() for all data entry
   - Use st.rerun() after every DB write
+  - Layout: use st.columns() for metrics, st.tabs() for sections, st.metric() for KPIs
+  - Use st.sidebar for navigation when the app has multiple views

@@ -1,19 +1,21 @@
 """
 agents_impl/test_writer_agent.py
 ────────────────────────────────────────────────────────────────────────────────
-TestWriter agent — generates a pytest file for the generated FastAPI application.
+TestWriter agent — generates a pytest file for the generated Streamlit application.
+
+Generated apps are Streamlit apps (single Python file, SQLite via sqlite3).
+They have NO ASGI 'app' object, so the original starlette.testclient approach
+was broken.  Tests instead use a sqlite3.Connection fixture that:
+  1. Calls init_db() from the generated app to set up the schema.
+  2. Yields a sqlite3.Connection for direct DB-level assertions.
+  3. Cleans up the test DB file on teardown.
 
 Changes from original:
-  - Removed module-level ChatGroq instantiation.
-  - LLM call delegated to core.agent_runner.run_agent().
-  - FIXTURE_BLOCK preserved verbatim (starlette.testclient + generated_app import).
-  - All post-processing regex operations preserved verbatim:
-      * Strip @pytest.mark.anyio and @pytest.mark.asyncio decorators
-      * Replace async def test_ with def test_
-      * Replace await client. / await ac. with client.
-      * Remove import anyio / import asyncio lines
-      * Remove async with AsyncClient blocks
-      * Fix exact count assertions (== N → >= 1, except == 0)
+  - FIXTURE_BLOCK replaced: starlette/TestClient removed, DB-level fixture added.
+  - Prompt updated to instruct LLM to write def test_xxx(db) functions using
+    sqlite3 inserts/queries instead of HTTP client calls.
+  - All post-processing regex operations preserved (async stripping still useful
+    as a safety net in case the LLM produces async tests).
   - Output path read from config instead of hardcoded "test_generated_app.py".
   - Optional session archiving of the test file.
   - State mutations preserved verbatim.
@@ -40,21 +42,36 @@ _PROMPT_KEY = "test_writer_v1"
 FIXTURE_BLOCK = (
     "import pytest\n"
     "import os\n"
+    "import sys\n"
     "import sqlite3\n"
     "import gc\n"
-    "from starlette.testclient import TestClient\n"
-    "from generated_app import app, init_db\n"
+    "\n"
+    "# Ensure generated_app.py (in the same directory as this test file) is importable\n"
+    "# regardless of which directory pytest is invoked from.\n"
+    "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
+    "from generated_app import init_db  # noqa: E402\n"
+    "\n\n"
+    "_TEST_DB = \"test_app.db\"\n"
     "\n\n"
     "@pytest.fixture\n"
-    "def client():\n"
-    "    os.environ[\"DB_PATH\"] = \"test_app.db\"\n"
-    "    init_db()\n"
-    "    with TestClient(app) as c:\n"
-    "        yield c\n"
-    "    gc.collect()\n"
-    "    for _db in (\"test_app.db\", \"app.db\"):\n"
+    "def db():\n"
+    "    \"\"\"Provides a sqlite3.Connection after a fresh init_db() call.\"\"\"\n"
+    "    os.environ[\"DB_PATH\"] = _TEST_DB\n"
+    "    # Remove any leftover DB from a previous test run\n"
+    "    for _f in (_TEST_DB, \"app.db\"):\n"
     "        try:\n"
-    "            os.remove(_db)\n"
+    "            os.remove(_f)\n"
+    "        except FileNotFoundError:\n"
+    "            pass\n"
+    "    init_db()\n"
+    "    conn = sqlite3.connect(_TEST_DB)\n"
+    "    conn.row_factory = sqlite3.Row\n"
+    "    yield conn\n"
+    "    conn.close()\n"
+    "    gc.collect()\n"
+    "    for _f in (_TEST_DB, \"app.db\"):\n"
+    "        try:\n"
+    "            os.remove(_f)\n"
     "        except (PermissionError, FileNotFoundError):\n"
     "            pass\n"
     "\n\n"
@@ -107,16 +124,19 @@ def _extract_test_functions(test_code: str) -> str:
 
 def test_writer_agent(state: dict[str, Any]) -> dict[str, Any]:
     prompt = (
-        "You are a senior QA engineer. Write ONLY pytest test functions based on the test cases below.\n\n"
+        "You are a senior QA engineer writing pytest tests for a Streamlit + SQLite app.\n\n"
         "Test Case Descriptions:\n"
         + (state.get("test_cases") or "")
         + "\n\nRULES:\n"
-        "1. Write ONLY def test_xxx(client): functions — nothing else\n"
-        "2. Do NOT write imports or fixtures — injected automatically\n"
-        "3. Sync only — no async def, no await\n"
-        "4. Use client.get/post/delete — no await\n"
-        "5. Use >= 1 not == N for count assertions\n"
-        "6. Return ONLY test functions, no markdown\n"
+        "1. Write ONLY def test_xxx(db): functions — nothing else\n"
+        "2. Do NOT write imports or fixtures — they are injected automatically\n"
+        "3. 'db' is a sqlite3.Connection with row_factory=sqlite3.Row; the schema is already created\n"
+        "4. Insert test data:  db.execute('INSERT INTO table(col) VALUES (?)', (value,)); db.commit()\n"
+        "5. Query data:        rows = db.execute('SELECT * FROM table').fetchall()\n"
+        "6. Assert presence:   assert len(rows) >= 1   (never use == N for counts)\n"
+        "7. Assert empty:      assert rows == []\n"
+        "8. Sync only — no async def, no await\n"
+        "9. Return ONLY test functions, no markdown\n"
     )
 
     content = run_agent(

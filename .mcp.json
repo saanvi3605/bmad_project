@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "langfuse": {
+      "command": "C:\\Python313\\python.exe",
+      "args": ["C:\\Users\\hp\\Desktop\\internships\\reliance\\project_bmad\\langfuse_mcp.py"]
+    }
+  }
+}

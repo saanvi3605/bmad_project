@@ -1,0 +1,127 @@
+# config/guardrails.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# BMAD Pipeline — Input Prompt Guardrails
+#
+# Checked before any LLM tokens are spent.  Add, remove, or disable rules here
+# without touching any Python code.
+#
+# Structure
+#   hard_blocks     — any of these phrases anywhere in the prompt → blocked
+#   intent_blocks   — creation verb + target phrase → blocked
+#   allow_overrides — if the prompt contains ANY of these, hard/intent blocks
+#                     in the same sentence are waived (defensive security tools)
+#   max_length      — reject prompts longer than this many characters
+#   enabled         — set false to disable all checks (for testing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+guardrails:
+  enabled: true
+
+  max_length: 4000   # Characters — prevents prompt-injection via giant inputs
+
+  # ── Hard blocks ─────────────────────────────────────────────────────────────
+  # These phrases are blocked regardless of surrounding context because they
+  # have no legitimate use in a Streamlit app generator.
+  hard_blocks:
+    # Malware categories
+    - ransomware
+    - keylogger
+    - key logger
+    - botnet
+    - rootkit
+    - root kit
+    - cryptojacker
+    - cryptominer
+    - crypto miner
+    - cryptojacking
+    - spyware
+    - adware payload
+    - trojan horse
+
+    # Attack infrastructure
+    - phishing page
+    - phishing site
+    - credential harvester
+    - credential stealer
+    - password stealer
+    - password harvester
+    - ddos attack
+    - dos attack
+    - brute force attack
+    - brute-force attack
+
+    # Exploit delivery
+    - exploit kit
+    - exploit payload
+    - shellcode
+    - reverse shell
+    - bind shell
+    - command and control
+    - c2 server
+    - c&c server
+
+    # Data exfiltration
+    - exfiltrate
+    - exfiltration
+
+  # ── Intent blocks ────────────────────────────────────────────────────────────
+  # Blocked when a creation verb appears near a harmful target in the prompt.
+  # Verb + target within 60 characters of each other = blocked.
+  intent_blocks:
+    verbs:
+      - build
+      - create
+      - write
+      - make
+      - develop
+      - code
+      - generate
+      - implement
+      - design
+      - produce
+
+    targets:
+      - virus
+      - malware
+      - worm
+      - trojan
+      - spyware
+      - exploit
+      - hack tool
+      - hacking tool
+      - cracking tool
+      - password cracker
+      - sql injection
+      - xss attack
+      - cross-site scripting
+      - port scanner          # offensive context — see allow_overrides
+      - network sniffer
+      - packet sniffer
+      - screen capture malware
+      - surveillance tool
+      - stalkerware
+
+  # ── Allow overrides ───────────────────────────────────────────────────────────
+  # If ANY of these appear in the prompt, intent_blocks and hard_blocks for
+  # "virus", "malware", "exploit", "port scanner", "packet sniffer" are waived.
+  # This allows legitimate defensive / educational security tool requests.
+  allow_overrides:
+    - antivirus
+    - anti-virus
+    - anti virus
+    - malware scanner
+    - malware detector
+    - malware analysis
+    - virus scanner
+    - virus detector
+    - intrusion detection
+    - security audit
+    - vulnerability scanner
+    - penetration testing report  # reporting, not attacking
+    - security dashboard
+    - threat intelligence
+    - cybersecurity dashboard
+
+  # ── Custom blocked topics ────────────────────────────────────────────────────
+  # Add your own domain-specific blocks here.
+  custom_blocks: []

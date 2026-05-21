@@ -1,29 +1,28 @@
 """
 core/observability.py
 ────────────────────────────────────────────────────────────────────────────────
-Replaces langfuse_setup.py with a richer observability layer that adds:
+Observability layer: per-pipeline session IDs, per-agent token/cost logging,
+and Langfuse tracing.
 
-  • Per-pipeline session IDs (UUID4) so every run is uniquely identifiable
-    in the Langfuse dashboard even when the run_name is the same.
-  • Per-agent token and cost logging written into BMADState["agent_log"].
-  • A cost estimator that uses the Groq token rates from models.yaml.
-  • A pipeline-level summary aggregator for the Streamlit UI.
-  • A safe flush() that uses the direct Langfuse client (not
-    langfuse_context, which has no flush() in Langfuse v4.x).
+Tracing strategy — LangChain CallbackHandler (v2 + v3 compatible)
+  create_session() builds a langfuse.callback.CallbackHandler and returns it
+  as langfuse_handler.  Callers pass it to:
+    • app.invoke(state, config={"callbacks": [handler]})
+        → Langfuse auto-creates spans for every LangGraph node, producing
+          the pipeline graph visualisation in the Langfuse dashboard.
+    • llm.invoke(prompt, config={"callbacks": [handler]})
+        → Langfuse auto-creates a nested ChatGroq generation with token
+          counts and latency inside the node span above.
 
-Langfuse version compatibility
-  This module targets langfuse>=4.0.0, which ships the CallbackHandler at
-  langfuse.langchain.CallbackHandler.  The direct client is langfuse.Langfuse.
-  Both are instantiated lazily so import errors only surface when the feature
-  is actually used, not at module import time.
+  flush(handler) ends and ships all pending events.  The handler is reset
+  to None afterwards so the next run starts with a clean exporter.
 
 Environment variables (set in .env):
   LANGFUSE_PUBLIC_KEY
   LANGFUSE_SECRET_KEY
   LANGFUSE_HOST          (default: https://cloud.langfuse.com)
 
-All functions are safe to call even if Langfuse is disabled or
-the env vars are absent — they log a warning and return a no-op object.
+All functions are safe to call even if Langfuse is disabled — they warn and no-op.
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -34,45 +33,22 @@ import time
 import uuid
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
 from core.llm_factory import get_observability_config
 
-if TYPE_CHECKING:
-    # Avoid hard import at module level so the whole codebase does not break
-    # if langfuse is uninstalled.
-    from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
-
 # ---------------------------------------------------------------------------
-# Singleton Langfuse client
+# Per-run CallbackHandler singleton
 # ---------------------------------------------------------------------------
 
-_lf_client: Optional[Any] = None
+_langfuse_handler: Optional[Any] = None  # langfuse.callback.CallbackHandler
 
 
-def get_lf_client() -> Optional[Any]:
-    """
-    Return the process-level Langfuse singleton, creating it on first call.
-
-    Using a singleton instead of Langfuse() per agent call prevents two bugs:
-      1. Each Langfuse() instance starts its own background flush thread.
-         When the local variable goes out of scope, GC can kill the thread
-         mid-flight, silently dropping events.
-      2. observability.flush() was creating a fresh Langfuse() with no
-         pending events, making the final flush a no-op.
-    """
-    global _lf_client
-    if _lf_client is None:
-        if not _ensure_env():
-            return None
-        try:
-            from langfuse import Langfuse  # type: ignore[import]
-            _lf_client = Langfuse()
-        except Exception:
-            pass
-    return _lf_client
+def get_langfuse_handler() -> Optional[Any]:
+    """Return the CallbackHandler for the current pipeline run, or None."""
+    return _langfuse_handler
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +59,6 @@ def get_lf_client() -> Optional[Any]:
 def _ensure_env() -> bool:
     """
     Load .env and confirm the minimum Langfuse env vars are present.
-
     Returns True if Langfuse is properly configured, False otherwise.
     """
     load_dotenv()
@@ -97,7 +72,6 @@ def _ensure_env() -> bool:
             stacklevel=3,
         )
         return False
-    # Ensure LANGFUSE_HOST is exported so the SDK picks it up.
     host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
     os.environ["LANGFUSE_HOST"] = host
     return True
@@ -112,20 +86,18 @@ def _ensure_env() -> bool:
 class AgentCallRecord:
     """
     Immutable record of a single agent's LLM invocation.
-
-    Appended to BMADState["agent_log"] by ``log_agent_call()``.
-    Serialisable to dict via ``to_dict()`` for JSON archiving.
+    Appended to BMADState["agent_log"] by log_agent_call().
     """
 
     agent_name: str
-    timestamp_utc: float          # time.time() at call completion
+    timestamp_utc: float
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    cost_usd: float               # estimated; 0.0 if track_cost is False
-    latency_ms: float             # wall-clock ms for the LLM round-trip
+    cost_usd: float
+    latency_ms: float
     model: str
-    prompt_key: str               # e.g. "developer_clean_v1"
+    prompt_key: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -174,35 +146,56 @@ class PipelineSummary:
 
 def create_session(
     run_name: str = "BMAD Pipeline Run",
-) -> tuple[str, Optional[str]]:
+) -> tuple[str, Optional[Any]]:
     """
-    Generate a new pipeline session and open a Langfuse trace for it.
+    Generate a new pipeline session and build a Langfuse CallbackHandler for it.
+
+    The CallbackHandler is the correct integration point for LangChain/LangGraph:
+      • Pass to app.invoke() via config={"callbacks": [handler]}
+          → Langfuse auto-instruments every LangGraph node, producing the
+            pipeline graph visualisation (PromptRefiner → Planner → … → END).
+      • Pass to llm.invoke() via config={"callbacks": [handler]}
+          → Each ChatGroq call becomes a nested generation with token counts.
 
     Returns
     -------
     session_id : str
-        UUID4 string stored in BMADState["session_id"].
-    trace_id : str | None
-        Langfuse trace ID.  Stored in BMADState["langfuse_handler"] and
-        passed to every _trace_langfuse() call so all agent generations are
-        grouped under one trace in the dashboard.  None if Langfuse is
-        unconfigured.
+        UUID4 stored in BMADState["session_id"].
+    handler : CallbackHandler | None
+        Stored in BMADState["langfuse_handler"].
+        None if Langfuse keys are missing or the SDK is unavailable.
     """
+    global _langfuse_handler
+
     session_id = str(uuid.uuid4())
 
-    lf = get_lf_client()
-    if lf is None:
+    if not _ensure_env():
+        _langfuse_handler = None
         return session_id, None
 
     try:
-        trace = lf.trace(name=run_name, session_id=session_id)
-        return session_id, trace.id
-    except Exception as exc:  # noqa: BLE001
+        # Try the standard import path first; fall back to the older alias.
+        try:
+            from langfuse.callback import CallbackHandler  # type: ignore[import]
+        except ImportError:
+            from langfuse.langchain import CallbackHandler  # type: ignore[import]
+
+        handler = CallbackHandler(
+            session_id=session_id,
+            trace_name=run_name,
+        )
+        _langfuse_handler = handler
+        print(f"[Langfuse] CallbackHandler ready (session {session_id[:8]}…)")
+        return session_id, handler
+
+    except Exception as exc:
         warnings.warn(
-            f"Failed to create Langfuse trace: {exc}. Continuing without tracing.",
+            f"Failed to create Langfuse CallbackHandler: {exc}. "
+            "Continuing without tracing.",
             RuntimeWarning,
             stacklevel=2,
         )
+        _langfuse_handler = None
         return session_id, None
 
 
@@ -216,13 +209,6 @@ def _estimate_cost(
     output_tokens: int,
     obs_cfg: dict[str, Any],
 ) -> float:
-    """
-    Compute estimated USD cost from token counts using rates in models.yaml.
-
-    Cost formula:
-      cost = (input_tokens / 1_000_000 * cost_per_million_input)
-           + (output_tokens / 1_000_000 * cost_per_million_output)
-    """
     if not obs_cfg.get("track_cost", True):
         return 0.0
     rate_in = float(obs_cfg.get("cost_per_million_input_tokens", 0.59))
@@ -241,26 +227,7 @@ def log_agent_call(
 ) -> AgentCallRecord:
     """
     Build an AgentCallRecord and append it to state["agent_log"].
-
-    This function is called by agent_runner.py immediately after every
-    successful LLM invocation.  The Langfuse CallbackHandler already handles
-    uploading the raw trace; this function is purely for local bookkeeping
-    so the Streamlit UI can display per-agent cost/token summaries without
-    hitting the Langfuse API.
-
-    Parameters
-    ----------
-    state        BMADState dict (mutated: agent_log is extended).
-    agent_name   Human-readable agent identifier, e.g. "developer".
-    prompt_key   Registry key of the prompt that was used, e.g. "developer_clean_v1".
-    input_tokens Token count for the prompt (from response.usage_metadata).
-    output_tokens Token count for the completion.
-    latency_ms   Wall-clock round-trip time for llm.invoke().
-    model        Model string used, e.g. "llama-3.3-70b-versatile".
-
-    Returns
-    -------
-    AgentCallRecord — also appended to state["agent_log"].
+    Called by agent_runner.py after every successful LLM invocation.
     """
     obs_cfg = get_observability_config()
     total = input_tokens + output_tokens
@@ -278,7 +245,6 @@ def log_agent_call(
         prompt_key=prompt_key,
     )
 
-    # Initialise the list if this is the first agent in the run.
     if state.get("agent_log") is None:
         state["agent_log"] = []
 
@@ -294,13 +260,7 @@ def log_agent_call(
 def get_pipeline_summary(state: dict[str, Any]) -> PipelineSummary:
     """
     Aggregate all AgentCallRecord entries in state["agent_log"] into a
-    PipelineSummary.
-
-    Safe to call even if agent_log is None or empty — returns zeroed summary.
-
-    Used by:
-      - apps/pipeline_ui.py  (renders cost/token summary cards)
-      - main.py              (prints summary to console on pipeline complete)
+    PipelineSummary. Safe to call even if agent_log is None or empty.
     """
     session_id = state.get("session_id", "unknown")
     summary = PipelineSummary(session_id=session_id)
@@ -325,22 +285,37 @@ def get_pipeline_summary(state: dict[str, Any]) -> PipelineSummary:
 
 def flush(handler: Optional[Any] = None) -> None:
     """
-    Flush all pending Langfuse events to the cloud using the singleton client.
+    Flush all pending Langfuse events to the cloud.
 
-    The ``handler`` parameter is kept for call-site compatibility but is
-    ignored — the singleton already holds all pending events.
+    Must be called in a finally block after every pipeline run so traces
+    appear in the Langfuse dashboard immediately.
+
+    Parameters
+    ----------
+    handler : CallbackHandler | None
+        Explicit handler to flush.  Falls back to the module-level
+        _langfuse_handler if not provided (covers the Streamlit UI path
+        where the handler is not passed to the call site).
 
     Safe to call even when Langfuse is unconfigured.
     """
-    lf = get_lf_client()
-    if lf is None:
+    global _langfuse_handler
+
+    h = handler or _langfuse_handler
+    if h is None:
         return
+
+    print("[Langfuse] Flushing...")
     try:
-        lf.flush()
-        print("[Langfuse] Final flush complete")
+        h.flush()
+        print("[Langfuse] Flush complete")
     except Exception as exc:  # noqa: BLE001
         warnings.warn(
             f"[Langfuse] Flush warning: {exc}",
             RuntimeWarning,
             stacklevel=2,
         )
+    finally:
+        # Reset so the next pipeline run starts with a fresh handler and
+        # exporter thread — avoids the drained-processor silent-drop bug.
+        _langfuse_handler = None

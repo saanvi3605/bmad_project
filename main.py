@@ -27,9 +27,19 @@ def _load_pipeline_rules() -> str:
 
 
 def run(user_request: str) -> None:
+    from core.guardrails import check_prompt, format_rejection
     from core.observability import create_session, get_pipeline_summary, flush
     from core.agent_runner import build_initial_state, reset_llm_singletons
     from orchestration.graph import app
+
+    # ── Guardrail check — before spending any tokens ───────────────────────
+    is_safe, reason = check_prompt(user_request.strip())
+    if not is_safe:
+        print("\n" + "=" * 70)
+        print("  REQUEST BLOCKED")
+        print("=" * 70)
+        print(format_rejection(reason).replace("**", "").replace("_", ""))
+        return
 
     reset_llm_singletons()
 
@@ -51,7 +61,12 @@ def run(user_request: str) -> None:
     )
 
     print("Starting pipeline...\n")
-    final_state = app.invoke(initial_state)
+    invoke_cfg = (
+        {"callbacks": [langfuse_handler]}
+        if langfuse_handler is not None and hasattr(langfuse_handler, "on_llm_start")
+        else {}
+    )
+    final_state = app.invoke(initial_state, invoke_cfg)
 
     # Flush Langfuse
     try:

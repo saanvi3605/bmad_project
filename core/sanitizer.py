@@ -70,6 +70,89 @@ if __name__ == "__main__":
     pass  # Run with: streamlit run generated_app.py
 '''
 
+# CSS injected into every generated app right after st.set_page_config().
+# Edit this constant to change the look of all future pipeline outputs.
+_BMAD_THEME_CSS = """<style>
+/* bmad-theme — injected by sanitizer */
+
+/* Hide Streamlit chrome for a cleaner look */
+#MainMenu  { visibility: hidden; }
+footer     { visibility: hidden; }
+
+/* Typography */
+html, body, [class*="css"] {
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+h1 { font-size: 2rem !important; font-weight: 700 !important; }
+h2 { font-size: 1.4rem !important; font-weight: 600 !important; }
+h3 { font-size: 1.1rem !important; font-weight: 600 !important; }
+
+/* Buttons — rounded with hover lift */
+.stButton > button {
+    border-radius: 8px;
+    font-weight: 500;
+    padding: 0.4rem 1.2rem;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* Metric cards */
+[data-testid="metric-container"] {
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+/* Form containers */
+[data-testid="stForm"] {
+    border: 1px solid rgba(128, 128, 128, 0.15);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+/* Input fields */
+.stTextInput  > div > div > input,
+.stNumberInput > div > div > input,
+.stTextArea   > div > div > textarea {
+    border-radius: 8px !important;
+}
+
+/* Selectbox */
+.stSelectbox > div > div { border-radius: 8px !important; }
+
+/* DataFrames */
+[data-testid="stDataFrame"] > div { border-radius: 10px; overflow: hidden; }
+
+/* Alert / status boxes */
+.stSuccess, .stError, .stWarning, .stInfo {
+    border-radius: 8px !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] > div:first-child {
+    background: rgba(0, 0, 0, 0.12);
+    border-right: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] { gap: 8px; }
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0;
+    padding: 0.4rem 1rem;
+}
+
+/* Expanders */
+.streamlit-expanderHeader {
+    border-radius: 8px !important;
+    font-weight: 500;
+}
+</style>"""
+
 
 # ---------------------------------------------------------------------------
 # Public function
@@ -127,11 +210,55 @@ def sanitize_code(code: str) -> str:
     # format="%.2f" is present — swaps to format="%d" and step=1.
     result = _fix_integer_number_inputs(result)
 
+    # Inject CSS theme right after st.set_page_config(...)
+    result = _inject_css_theme(result)
+
     # Ensure __main__ guard exists
     if "__name__" not in result:
         result += STREAMLIT_MAIN_GUARD
 
     return result
+
+
+def _inject_css_theme(code: str) -> str:
+    """
+    Insert the BMAD CSS theme block immediately after st.set_page_config(...).
+
+    The injection marker ``/* bmad-theme */`` prevents double-injection if
+    sanitize_code() is ever called twice on the same code.
+
+    The parenthesis-depth walk correctly handles multi-line set_page_config
+    calls with nested dicts/tuples (e.g. page_icon=("🤖",)).
+    """
+    if "/* bmad-theme */" in code:
+        return code  # Already injected — skip
+
+    start = code.find("st.set_page_config(")
+    if start == -1:
+        # No set_page_config found — prepend theme after all imports as fallback
+        insert_at = code.find("\n\n")
+        if insert_at == -1:
+            return code
+        theme_call = f'\nst.markdown("""{_BMAD_THEME_CSS}""", unsafe_allow_html=True)\n'
+        return code[:insert_at] + theme_call + code[insert_at:]
+
+    # Walk forward to find the matching closing parenthesis
+    depth = 0
+    i = start
+    while i < len(code):
+        if code[i] == "(":
+            depth += 1
+        elif code[i] == ")":
+            depth -= 1
+            if depth == 0:
+                insert_at = i + 1
+                break
+        i += 1
+    else:
+        return code  # Malformed call — leave unchanged
+
+    theme_call = f'\nst.markdown("""{_BMAD_THEME_CSS}""", unsafe_allow_html=True)\n'
+    return code[:insert_at] + theme_call + code[insert_at:]
 
 
 def _fix_table_names_with_spaces(code: str) -> str:

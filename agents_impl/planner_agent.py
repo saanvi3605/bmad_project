@@ -70,6 +70,7 @@ RULES:
         agent_name=_AGENT_NAME,
         prompt_key=_PROMPT_KEY,
         state=state,
+        light=True,  # Functional spec — 8b handles this well, saves 70b quota
     )
     state["functional_spec"] = content
     state["review_attempts"] = 0

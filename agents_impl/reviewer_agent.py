@@ -70,6 +70,7 @@ RULES:
         agent_name=_AGENT_NAME,
         prompt_key="reviewer_v1",
         state=state,
+        light=False,  # Reviewer reads full code — needs 70b comprehension depth to catch subtle bugs
     )
 
     upper = content.upper()
@@ -83,7 +84,7 @@ RULES:
     else:
         state["review_feedback"] = content.strip()
 
-    status = "✅ APPROVED" if state["review_approved"] else "❌ REJECTED"
+    status = "APPROVED" if state["review_approved"] else "REJECTED"
     print(f"\n  [Reviewer] {status} (attempt {state['review_attempts']})")
     if not state["review_approved"]:
         print(f"  Feedback: {state['review_feedback'][:200]}...")

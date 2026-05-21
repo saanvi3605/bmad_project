@@ -263,15 +263,12 @@ def _run_pipeline_worker(
                 pass
 
         langgraph_app = _load_app()
-        final_state = langgraph_app.invoke(initial_state)
-
-        # Flush Langfuse traces after pipeline completes
-        try:
-            from core.observability import flush
-            flush(langfuse_handler)
-        except Exception:
-            pass
-
+        invoke_cfg = (
+            {"callbacks": [langfuse_handler]}
+            if langfuse_handler is not None and hasattr(langfuse_handler, "on_llm_start")
+            else {}
+        )
+        final_state = langgraph_app.invoke(initial_state, invoke_cfg)
         result_q.put((final_state, None))
 
     except Exception as exc:  # noqa: BLE001
@@ -279,6 +276,13 @@ def _run_pipeline_worker(
         result_q.put((None, error_msg))
 
     finally:
+        # Always flush Langfuse — runs on both success and error paths.
+        # Wrapped in its own try/except so a flush failure never crashes the thread.
+        try:
+            from core.observability import flush
+            flush()
+        except Exception:
+            pass
         # Save to history regardless of outcome — never let this crash the thread
         save_run_to_history(user_request, final_state, error_msg)
 
@@ -318,13 +322,17 @@ def _render_sidebar():
         st.subheader("Pipeline")
         st.markdown("""
 ```
+PromptRefiner
+      ↓
+ComplexityScorer (1-10)
+      ↓
 Planner → Architect → Developer
-              ↓
-          Validator ⟳ (2x)
-              ↓
-          Tester → Reviewer ⟳ (2x)
-              ↓
-          Executor → TestWriter
+                ↓
+            Validator ⟳ (2x)
+                ↓
+            Tester → Reviewer ⟳ (2x)
+                ↓
+            Executor → TestWriter
 ```
 """)
 
@@ -502,6 +510,28 @@ def _render_results(final_state: dict):
         st.caption(f"Session ID: `{session_id}`")
         st.caption(f"Pipeline status: `{final_state.get('pipeline_status', 'N/A')}`")
 
+        # ── Complexity Analysis ────────────────────────────────────────
+        complexity_score = final_state.get("complexity_score")
+        if complexity_score is not None:
+            st.markdown("---")
+            st.subheader("Complexity Analysis")
+            cx1, cx2 = st.columns([1, 3])
+            cx1.metric("Complexity Score", f"{complexity_score}/10")
+            cx2.markdown(
+                f"**Reason:** {final_state.get('complexity_reason') or 'N/A'}"
+            )
+            override = final_state.get("complexity_model_override")
+            if override:
+                st.info(
+                    f"Simple prompt detected — used `{override}` for all agents "
+                    f"(score {complexity_score} ≤ threshold). Tokens saved."
+                )
+            else:
+                st.success(
+                    f"Complex prompt detected — used configured heavy model "
+                    f"(score {complexity_score} > threshold)."
+                )
+
         st.markdown("---")
         st.info(
             "Full traces are available in the Langfuse dashboard if "
@@ -665,19 +695,32 @@ def _render_results(final_state: dict):
                     except Exception:
                         pass
                 port = _find_free_port(8503)
+                # Strip Streamlit-internal env vars so the child process
+                # doesn't inherit port/server settings from the parent app.
+                child_env = {
+                    k: v for k, v in __import__("os").environ.items()
+                    if not k.startswith("STREAMLIT_")
+                }
                 new_proc = subprocess.Popen(
                     [sys.executable, "-m", "streamlit", "run", app_file,
-                     "--server.headless", "true", "--server.port", str(port)],
+                     "--server.headless", "true", "--server.port", str(port),
+                     "--server.address", "localhost"],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=child_env,
                 )
-                time.sleep(5)  # wait for Streamlit to be ready
+                time.sleep(9)  # Streamlit cold-start with plotly can take 7-8s
                 if new_proc.poll() is None:
                     st.session_state["app_process"] = new_proc
                     st.session_state["app_port"] = port
                     st.rerun()
                 else:
-                    st.error("Generated app failed to start. Check the code for errors.")
+                    _, err = new_proc.communicate()
+                    st.error(
+                        "Generated app failed to start.\n\n"
+                        f"**Error:**\n```\n{err.strip() or '(no stderr output)'}\n```"
+                    )
 
     # ── Right column: Tests ───────────────────────────────────────────────
     with col_tests:
@@ -714,7 +757,7 @@ def _render_results(final_state: dict):
 _render_sidebar()
 
 st.title("🤖 BMAD AI Orchestration Pipeline")
-st.caption("Planner → Architect → Developer → Validator → Tester → Reviewer → Executor → TestWriter")
+st.caption("PromptRefiner → ComplexityScorer → Planner → Architect → Developer → Validator → Tester → Reviewer → Executor → TestWriter")
 st.markdown("---")
 
 # ── Input section ─────────────────────────────────────────────────────────────
@@ -773,6 +816,13 @@ if reset_clicked:
 
 # ── Launch pipeline ───────────────────────────────────────────────────────────
 if run_clicked and (user_request or "").strip():
+    # ── Guardrail check — before spending any tokens ───────────────────────
+    from core.guardrails import check_prompt, format_rejection
+    _safe, _reason = check_prompt(user_request.strip())
+    if not _safe:
+        st.error(format_rejection(_reason))
+        st.stop()
+
     # Drain any leftover result from a previous run
     while not st.session_state["result_queue"].empty():
         try:

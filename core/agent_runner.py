@@ -40,11 +40,11 @@ import warnings
 from typing import Any, Optional
 
 from core.llm_factory import (
-    build_llm, build_llm_light,
+    build_llm, build_llm_light, build_llm_for_config,
     get_llm_config, get_llm_light_config,
     clear_config_cache,
 )
-from core.observability import log_agent_call, get_lf_client
+from core.observability import log_agent_call
 
 # ---------------------------------------------------------------------------
 # Lazy singletons — built on first call, NOT at import time.
@@ -56,6 +56,21 @@ _llm: Optional[Any] = None
 _llm_light: Optional[Any] = None
 _llm_model: Optional[str] = None
 _llm_light_model: Optional[str] = None
+# Cache for override LLMs keyed by model name (set by ComplexityScorer)
+_llm_overrides: dict[str, Any] = {}
+
+
+def _get_llm_for_override(model_name: str) -> Any:
+    """Return a cached LLM instance for a complexity-scorer model override."""
+    global _llm_overrides
+    if model_name not in _llm_overrides:
+        # Build from the light config but swap the model name so all other
+        # settings (temperature, max_tokens, provider) remain consistent.
+        base_cfg = dict(get_llm_light_config())
+        base_cfg["model"] = model_name
+        _llm_overrides[model_name] = build_llm_for_config(base_cfg)
+        print(f"[LLM] Override model loaded: {model_name}")
+    return _llm_overrides[model_name]
 
 
 def _get_llm(light: bool = False) -> Any:
@@ -90,25 +105,16 @@ def reset_llm_singletons() -> None:
     next _get_llm() call re-reads the config file and builds fresh instances.
     This ensures that config changes made between runs (e.g. switching models
     in models.yaml while the Streamlit UI is open) are always picked up.
+    Also clears any complexity-scorer override LLMs from the previous run.
     """
-    global _llm, _llm_light, _llm_model, _llm_light_model, _LLM_CFG
+    global _llm, _llm_light, _llm_model, _llm_light_model, _LLM_CFG, _llm_overrides
     clear_config_cache()
     _LLM_CFG = {}
     _llm = None
     _llm_light = None
     _llm_model = None
     _llm_light_model = None
-
-
-_LLM_CFG: dict[str, Any] = {}
-
-
-def _get_llm_cfg() -> dict[str, Any]:
-    """Lazily load LLM config to avoid reading YAML at import time."""
-    global _LLM_CFG
-    if not _LLM_CFG:
-        _LLM_CFG = get_llm_config()
-    return _LLM_CFG
+    _llm_overrides = {}
 
 
 # ---------------------------------------------------------------------------
@@ -194,12 +200,32 @@ def run_agent(
     ------
     Re-raises any exception from the LLM call unchanged.
     """
+    # If ComplexityScorer set an override and this is a heavy-model call, use it.
+    override_model = state.get("complexity_model_override") if not light else None
+    if override_model:
+        llm_instance = _get_llm_for_override(override_model)
+        model_name = override_model
+    else:
+        llm_instance = _get_llm(light=light)
+        model_name = (get_llm_light_config() if light else get_llm_config())["model"]
+
+    # Build the Langfuse callback list from state so Langfuse auto-instruments
+    # this LLM call and nests it under the current LangGraph node span.
+    lf_handler = state.get("langfuse_handler")
+    callbacks = (
+        [lf_handler]
+        if lf_handler is not None and hasattr(lf_handler, "on_llm_start")
+        else []
+    )
+
     t_start = time.perf_counter()
-    response = _get_llm(light=light).invoke(prompt)
+    if callbacks:
+        response = llm_instance.invoke(prompt, config={"callbacks": callbacks})
+    else:
+        response = llm_instance.invoke(prompt)
     latency_ms = (time.perf_counter() - t_start) * 1000.0
 
     input_tokens, output_tokens = extract_tokens(response)
-    model_name = (get_llm_light_config() if light else get_llm_config())["model"]
 
     log_agent_call(
         state=state,
@@ -211,80 +237,7 @@ def run_agent(
         model=model_name,
     )
 
-    # Log to Langfuse directly — provider-agnostic, no LangChain callbacks needed.
-    _trace_langfuse(state, agent_name, prompt, response.content, input_tokens, output_tokens, model_name)
-
     return response.content
-
-
-def _trace_langfuse(
-    state: dict[str, Any],
-    agent_name: str,
-    prompt: str,
-    output: str,
-    input_tokens: int,
-    output_tokens: int,
-    model: str,
-) -> None:
-    """
-    Queue one generation record in the singleton Langfuse client.
-
-    Events are batched by the client's background thread and flushed once
-    at the end of the pipeline via observability.flush().  This avoids the
-    two bugs from the previous per-call Langfuse() approach:
-      - GC killing the flush thread mid-flight
-      - Each instance having a separate event queue that was never unified
-    """
-    lf = get_lf_client()
-    if lf is None:
-        return
-
-    session_id = state.get("session_id", "")
-    trace_id = state.get("langfuse_handler")  # trace_id string set by create_session()
-
-    print(f"[Langfuse] Logging {agent_name}...")
-    try:
-        if isinstance(trace_id, str) and trace_id:
-            # Add generation to the pipeline's trace so all agents are grouped
-            trace = lf.trace(id=trace_id)
-            trace.generation(
-                name=agent_name,
-                model=model,
-                input=prompt,
-                output=output,
-                usage={
-                    "input": input_tokens,
-                    "output": output_tokens,
-                    "total": input_tokens + output_tokens,
-                },
-            )
-        else:
-            # Fallback: standalone generation with session_id for grouping
-            lf.generation(
-                name=agent_name,
-                model=model,
-                input=prompt,
-                output=output,
-                session_id=session_id,
-                usage={
-                    "input": input_tokens,
-                    "output": output_tokens,
-                    "total": input_tokens + output_tokens,
-                },
-            )
-        print(f"[Langfuse] OK {agent_name} queued")
-    except Exception as e:
-        print(f"[Langfuse ERROR] {agent_name}: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Convenience wrapper for agents that need the raw AIMessage
-# ---------------------------------------------------------------------------
-
-
-def invoke_with_callbacks(prompt: str, state: dict[str, Any]) -> Any:
-    """Returns the raw AIMessage. Prefer run_agent() for standard agent calls."""
-    return _get_llm().invoke(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -326,4 +279,8 @@ def build_initial_state(
         "agent_log": [],
         "output_dir": None,
         "refined_prompt": None,
+        # Complexity Scorer fields
+        "complexity_score": None,
+        "complexity_reason": None,
+        "complexity_model_override": None,
     }

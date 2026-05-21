@@ -48,6 +48,11 @@ class BMADState(TypedDict):
     output_dir: Optional[str]         # absolute path to per-session archive dir
     refined_prompt: Optional[str]     # PromptRefiner output; Planner reads this first
 
+    # ── Complexity Scorer fields ───────────────────────────────────────────
+    complexity_score: Optional[int]    # 1-10; set by ComplexityScorer agent
+    complexity_reason: Optional[str]   # one-sentence explanation from ComplexityScorer
+    complexity_model_override: Optional[str]  # model name for heavy agents; None = use default
+
 
 # Backward-compatibility alias — keeps ``from state import AgentState`` working
 AgentState = BMADState

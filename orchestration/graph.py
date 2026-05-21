@@ -5,22 +5,21 @@ LangGraph StateGraph construction — full BMAD pipeline.
 
 Pipeline topology:
 
-  PromptRefiner → Planner → Architect → Developer → Validator
-                                                         │
-                          ┌── passed / max_attempts ─────┘
-                          ↓
-                       Tester → Reviewer
-                                   │
-            ┌── approved / max_retries ──────────────────┐
-            │                                            ↓
-            └── retry ──────────────────────────→ Developer
-                                                         ↓
-                                                  Executor → TestWriter → END
+  PromptRefiner → ComplexityScorer → Planner → Architect → Developer → Validator
+                                                                            │
+                               ┌── passed / max_attempts ───────────────────┘
+                               ↓
+                            Tester → Reviewer
+                                        │
+                 ┌── approved / max_retries ──────────────────┐
+                 │                                            ↓
+                 └── retry ──────────────────────────→ Developer
+                                                              ↓
+                                                       Executor → TestWriter → END
 
-PromptRefiner is the entry point.  It rewrites the raw user prompt into a
-structured product brief stored in state["refined_prompt"].  Planner reads
-this field instead of user_request, so all downstream agents benefit without
-needing changes.
+PromptRefiner rewrites the raw prompt into a structured brief (state["refined_prompt"]).
+ComplexityScorer scores the brief 1-10 and optionally sets state["complexity_model_override"]
+to route simple prompts through the light model, saving tokens and cost.
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -30,6 +29,7 @@ from langgraph.graph import StateGraph, END
 
 from core.state import BMADState
 from agents_impl.prompt_refiner_agent import prompt_refiner_agent
+from agents_impl.complexity_scorer_agent import complexity_scorer_agent
 from agents_impl.planner_agent import planner_agent
 from agents_impl.architect_agent import architect_agent
 from agents_impl.developer_agent import developer_agent
@@ -45,8 +45,9 @@ from agents_impl.test_writer_agent import test_writer_agent
 
 workflow = StateGraph(BMADState)
 
-workflow.add_node("PromptRefiner", prompt_refiner_agent)
-workflow.add_node("Planner",       planner_agent)
+workflow.add_node("PromptRefiner",     prompt_refiner_agent)
+workflow.add_node("ComplexityScorer", complexity_scorer_agent)
+workflow.add_node("Planner",          planner_agent)
 workflow.add_node("Architect",     architect_agent)
 workflow.add_node("Developer",     developer_agent)
 workflow.add_node("Validator",     validator_agent)
@@ -57,8 +58,9 @@ workflow.add_node("TestWriter",    test_writer_agent)
 
 workflow.set_entry_point("PromptRefiner")
 
-workflow.add_edge("PromptRefiner", "Planner")
-workflow.add_edge("Planner",       "Architect")
+workflow.add_edge("PromptRefiner",    "ComplexityScorer")
+workflow.add_edge("ComplexityScorer", "Planner")
+workflow.add_edge("Planner",          "Architect")
 workflow.add_edge("Architect",     "Developer")
 
 # Developer → Validator → fix loop — preserved verbatim

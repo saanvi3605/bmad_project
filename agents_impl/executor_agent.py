@@ -79,8 +79,8 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
         process = subprocess.Popen(
             [sys.executable, "-m", "streamlit", "run", output_path,
              "--server.headless", "true", "--server.port", str(port)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # Discard stdout — Streamlit startup banner
+            stderr=subprocess.PIPE,     # Capture stderr only (crash messages)
             text=True,
         )
 
@@ -95,9 +95,9 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
             except subprocess.TimeoutExpired:
                 process.kill()
         else:
-            stdout, stderr = process.communicate()
-            state["execution_result"] = stdout.strip() if stdout.strip() else "Process exited."
-            state["execution_error"] = stderr.strip()
+            _, stderr = process.communicate()
+            state["execution_result"] = "Process exited before startup completed."
+            state["execution_error"] = stderr.strip() if stderr else ""
 
     except Exception as e:
         state["execution_result"] = ""

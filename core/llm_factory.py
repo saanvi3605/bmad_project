@@ -131,6 +131,11 @@ def build_llm_light() -> Any:
     return _build_from_config(get_llm_light_config())
 
 
+def build_llm_for_config(cfg: dict[str, Any]) -> Any:
+    """Build an LLM from an arbitrary config dict (used for complexity override models)."""
+    return _build_from_config(cfg)
+
+
 def clear_config_cache() -> None:
     """Bust the lru_cache so the next config read picks up models.yaml changes."""
     _load_config.cache_clear()

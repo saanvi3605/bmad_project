@@ -79,6 +79,7 @@ def prompt_refiner_agent(state: dict[str, Any]) -> dict[str, Any]:
         agent_name=_AGENT_NAME,
         prompt_key=_PROMPT_KEY,
         state=state,
+        light=True,  # Rewriting/expansion — 8b is sufficient, saves 70b quota
     )
 
     state["refined_prompt"] = content.strip()

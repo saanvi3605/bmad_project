@@ -12,7 +12,9 @@
 # Do NOT put secrets here. API keys live in .env only.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Heavy model — used by: planner, architect, developer, reviewer
+# Heavy model — used by: architect, developer, reviewer
+# Reviewer needs 70b to genuinely understand the full generated code.
+# Planner stays on 8b — architect (70b) compensates for any weak spec.
 llm:
   provider: groq
   model: llama-3.3-70b-versatile
@@ -20,7 +22,8 @@ llm:
   max_tokens: 4096
   request_timeout: 120
 
-# Light model — used by: tester, test_writer (separate token quota)
+# Light model — used by: prompt_refiner, complexity_scorer, planner,
+#                         tester, test_writer
 llm_light:
   provider: groq
   model: llama-3.1-8b-instant
@@ -33,7 +36,7 @@ llm_light:
 # code alone exceeds the 6 000-token per-request limit on free tier.
 # The deterministic validator still runs regardless of this setting.
 reviewer:
-  enabled: false  # disabled — 8b model cannot review large generated code within TPM limits
+  enabled: true   # re-enabled — now runs on 8b (light=True), freeing 70b quota for arch+dev
 
 # ── Retry / loop limits ───────────────────────────────────────────────────────
 retry_limits:
@@ -61,6 +64,17 @@ session:
   # Parent directory for per-session archives.  A UUID subdirectory is
   # created inside this directory for each pipeline run.
   output_dir: outputs/sessions/
+
+# ── Complexity Scorer ────────────────────────────────────────────────────────
+#
+# Lightweight prompt classification before the main generation pipeline.
+# Score 1-threshold: use simple_model for all heavy agents (saves tokens/cost).
+# Score threshold+1 to 10: use the heavy llm: model (no override).
+complexity_scorer:
+  # Prompts scoring at or below this threshold use the light model.
+  simple_threshold: 4
+  # Model to use when the prompt is deemed simple.
+  simple_model: llama-3.1-8b-instant
 
 # ── Observability / cost tracking ────────────────────────────────────────────
 #
