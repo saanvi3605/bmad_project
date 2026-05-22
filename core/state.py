@@ -53,6 +53,16 @@ class BMADState(TypedDict):
     complexity_reason: Optional[str]   # one-sentence explanation from ComplexityScorer
     complexity_model_override: Optional[str]  # model name for heavy agents; None = use default
 
+    # ── Self-healing Executor fields ───────────────────────────────────────
+    runtime_error: Optional[str]       # stderr from crashed generated app; "" on success
+    runtime_fix_attempts: Optional[int]  # incremented each time Executor crashes
+
+    # ── ReadmeWriter fields ────────────────────────────────────────────────
+    readme_file: Optional[str]         # path to the generated README.md
+
+    # ── EvalAgent fields ───────────────────────────────────────────────────
+    eval_scores: Optional[dict]        # {dimension: {value, reason}} from evaluator.py
+
 
 # Backward-compatibility alias — keeps ``from state import AgentState`` working
 AgentState = BMADState

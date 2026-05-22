@@ -48,18 +48,33 @@ UI_RULES = ""
 
 
 def developer_agent(state: dict[str, Any]) -> dict[str, Any]:
-    # ── Dual feedback-mode detection — preserved exactly ──────────────────
+    # ── Triple feedback-mode detection (priority order: runtime > validation > review) ──
     feedback_section = ""
-    if state.get("validation_error") and not state.get("validation_passed"):
+    if state.get("runtime_error"):
+        # Highest priority: the app compiled and passed static analysis but
+        # crashed at runtime.  Send the full stderr back so the LLM can
+        # diagnose and fix the actual startup failure.
         feedback_section = (
-            "⚠️  VALIDATION FAILED — your previous code had this error:\n"
+            "RUNTIME CRASH — the generated app passed validation but crashed "
+            "at startup with this error:\n"
+            + state["runtime_error"]
+            + "\n\nDiagnose and fix this runtime error. "
+            "Keep all other working functionality intact."
+        )
+        prompt_key = "developer_runtime_fix_v1"
+        # Consume the field — if validation then fails and routes back here,
+        # we must use validation_fix mode rather than runtime_fix again.
+        state["runtime_error"] = ""
+    elif state.get("validation_error") and not state.get("validation_passed"):
+        feedback_section = (
+            "VALIDATION FAILED — your previous code had this error:\n"
             + state["validation_error"]
             + "\n\nFix this specific error. Keep everything else intact."
         )
         prompt_key = "developer_validation_fix_v1"
     elif state.get("review_feedback") and not state.get("review_approved"):
         feedback_section = (
-            "⚠️  CODE REVIEW FAILED — the reviewer rejected your code:\n"
+            "CODE REVIEW FAILED — the reviewer rejected your code:\n"
             + state["review_feedback"]
             + "\n\nFix ALL issues listed above. Do not remove any working functionality."
         )

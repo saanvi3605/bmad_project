@@ -21,6 +21,10 @@ python-dotenv>=1.0.0
 # ── Config / utilities ────────────────────────────────────────────────────────
 pyyaml>=6.0.0
 
+# ── Code style (applied by sanitizer to every generated app) ─────────────────
+black>=24.0.0
+isort>=5.13.0
+
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 streamlit>=1.32.0
 pandas>=2.0.0

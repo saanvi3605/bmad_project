@@ -217,6 +217,11 @@ def sanitize_code(code: str) -> str:
     if "__name__" not in result:
         result += STREAMLIT_MAIN_GUARD
 
+    # Auto-format: black normalises whitespace/line-length; isort deduplicates
+    # and orders imports.  Both run best-effort — a syntax error or missing
+    # package never blocks the pipeline; we just keep the pre-format string.
+    result = _apply_formatters(result)
+
     return result
 
 
@@ -297,6 +302,33 @@ def _fix_table_names_with_spaces(code: str) -> str:
             code,
         )
 
+    return code
+
+
+def _apply_formatters(code: str) -> str:
+    """
+    Run black then isort on sanitized code.
+
+    Both steps are best-effort:
+      - black normalises indentation, trailing commas, and line length so the
+        AST validator never trips on cosmetic whitespace issues.
+      - isort deduplicates and sorts the prepended REQUIRED_IMPORTS block,
+        removing any copies the LLM already emitted in the generated code.
+
+    If either tool is not installed, or the code still has a syntax error that
+    prevents formatting, the original string is returned unchanged so the
+    pipeline is never blocked by a formatter failure.
+    """
+    try:
+        import black  # type: ignore[import]
+        code = black.format_str(code, mode=black.Mode())
+    except Exception:
+        pass
+    try:
+        import isort  # type: ignore[import]
+        code = isort.code(code)
+    except Exception:
+        pass
     return code
 
 

@@ -89,6 +89,7 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
         if process.poll() is None:
             state["execution_result"] = f"App started successfully on port {port}."
             state["execution_error"] = ""
+            state["runtime_error"] = ""   # clear any previous crash — success
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -96,11 +97,50 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
                 process.kill()
         else:
             _, stderr = process.communicate()
+            error_text = stderr.strip() if stderr else "Process exited before startup."
             state["execution_result"] = "Process exited before startup completed."
-            state["execution_error"] = stderr.strip() if stderr else ""
+            state["execution_error"] = error_text
+            state["runtime_error"] = error_text
+            state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
+            print(f"[Executor] Crash detected (attempt {state['runtime_fix_attempts']}). "
+                  f"Routing to Developer for runtime fix.")
 
     except Exception as e:
+        error_text = str(e)
         state["execution_result"] = ""
-        state["execution_error"] = str(e)
+        state["execution_error"] = error_text
+        state["runtime_error"] = error_text
+        state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
+        print(f"[Executor] Exception (attempt {state['runtime_fix_attempts']}): {error_text}")
 
     return state
+
+
+# ---------------------------------------------------------------------------
+# Routing function — consumed by orchestration/graph.py
+# ---------------------------------------------------------------------------
+
+
+def should_runtime_fix(state: dict[str, Any]) -> str:
+    """
+    Called by LangGraph after every Executor run.
+
+    Returns
+    -------
+    "success"      — app started cleanly; proceed to TestWriter
+    "runtime_fix"  — crash detected, attempt limit not yet reached; send to Developer
+    "max_attempts" — crash but attempt limit exceeded; proceed to TestWriter anyway
+    """
+    runtime_error = state.get("runtime_error") or ""
+    if not runtime_error:
+        return "success"
+
+    from core.llm_factory import get_config
+    cfg = get_config()
+    max_retries = int(cfg.get("retry_limits", {}).get("executor_max_retries", 2))
+    attempts = state.get("runtime_fix_attempts") or 0
+
+    if attempts <= max_retries:
+        return "runtime_fix"
+    print(f"[Executor] Max runtime fix attempts ({max_retries}) reached — proceeding to TestWriter.")
+    return "max_attempts"

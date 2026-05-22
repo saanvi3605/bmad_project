@@ -1,0 +1,86 @@
+[
+  {
+    "id": "expense_tracker",
+    "category": "CRUD & Trackers",
+    "name": "Expense Tracker",
+    "description": "Log transactions by category, track a monthly budget, and visualise spending.",
+    "prompt": "Build a personal expense tracker with: add/edit/delete transactions (amount, category from Food/Transport/Rent/Entertainment/Health/Other, date, optional note); a monthly budget goal the user can set, with a progress bar showing percentage spent; a pie chart of spending by category for the selected month; a filterable transactions table (filter by month and category); and metric cards at the top showing total spent this month, remaining budget, and largest single expense."
+  },
+  {
+    "id": "student_grade_manager",
+    "category": "CRUD & Trackers",
+    "name": "Student Grade Manager",
+    "description": "Record subject marks, auto-calculate grades, and compare class performance.",
+    "prompt": "Build a student grade management app with: add/remove students (name, class, roll number); record marks per subject (Mathematics, Science, English, Hindi, Social Studies) on a 0–100 scale; auto-calculate total marks, percentage, and letter grade (A ≥ 80, B ≥ 60, C ≥ 40, F < 40) per student; a bar chart comparing subject-wise class averages; a grade report table with pass/fail status (pass ≥ 40% in every subject); and support for editing existing marks."
+  },
+  {
+    "id": "inventory_system",
+    "category": "CRUD & Trackers",
+    "name": "Inventory Management System",
+    "description": "Track stock levels, flag low-stock items, and log every stock movement.",
+    "prompt": "Build an inventory management system with: add/edit/delete products (name, SKU, category, quantity in stock, unit price, reorder level); a low-stock alert panel listing every item whose quantity is at or below its reorder level; total inventory value metric card; a bar chart of current stock levels by category; and a stock movement log that records every stock-in or stock-out event with timestamp, quantity changed, and reason. Support filtering the movement log by product and date range."
+  },
+  {
+    "id": "habit_tracker",
+    "category": "CRUD & Trackers",
+    "name": "Habit Tracker",
+    "description": "Build habits, mark daily completions, and visualise streaks.",
+    "prompt": "Build a daily habit tracker with: create/delete habits (name, target frequency: Daily or Weekly); a today view where the user marks each habit as done with a single click; a streak counter per habit showing consecutive days completed; a weekly summary bar chart showing completion rate for each habit over the last 7 days; and dashboard metrics showing today's completion rate, the longest active streak, and total habits completed this week."
+  },
+  {
+    "id": "task_project_manager",
+    "category": "CRUD & Trackers",
+    "name": "Task & Project Manager",
+    "description": "Manage projects and tasks with Kanban-style status columns.",
+    "prompt": "Build a project and task manager with: create/delete projects (name, description, deadline, priority: High/Medium/Low); add tasks to a project (title, assignee name, due date, status: Todo/In Progress/Done); a Kanban board view showing tasks grouped in three status columns; per-project progress metric (percentage of tasks marked Done); a dashboard showing all overdue tasks highlighted in red; and a workload bar chart counting open tasks per assignee across all projects."
+  },
+  {
+    "id": "sales_dashboard",
+    "category": "Dashboards",
+    "name": "Sales Analytics Dashboard",
+    "description": "Log sales, track revenue by region, and spot top-performing products.",
+    "prompt": "Build a sales analytics dashboard with: a form to log sales records (product name, quantity, unit price, region: North/South/East/West, salesperson name, sale date); metric cards for total revenue, total orders, average order value, and top-selling product by units; a line chart of daily total revenue for the past 30 days; a grouped bar chart of revenue by region for the current month; and a top-10 products table sorted by total revenue with download as CSV."
+  },
+  {
+    "id": "restaurant_manager",
+    "category": "Dashboards",
+    "name": "Restaurant Menu & Orders",
+    "description": "Manage your menu items and customer orders in one place.",
+    "prompt": "Build a restaurant management app with two main sections. Menu Management: add/edit/delete menu items (name, category from Starters/Mains/Desserts/Drinks, price, available toggle). Order Management: place a new order by selecting items and quantities from the available menu, view all active orders with itemised bill total, mark an order as completed, and see today's total revenue and number of orders as metric cards. Show a bar chart of today's revenue by menu category."
+  },
+  {
+    "id": "library_system",
+    "category": "Dashboards",
+    "name": "Library Management System",
+    "description": "Track books, members, loans, and overdue fines.",
+    "prompt": "Build a library management system with: add/remove books (title, author, ISBN, genre, total copies); member registration (name, member ID, phone); issue a book to a member with a 14-day due date — reject if no copies are available; return a book and auto-calculate an overdue fine of Rs. 2 per day if returned late; metric cards showing total books, copies currently issued, available copies, and members with overdue books; and a search bar to find books by title or author."
+  },
+  {
+    "id": "bmi_health",
+    "category": "Utilities",
+    "name": "BMI & Health Calculator",
+    "description": "Calculate BMI, log history, and estimate daily calorie needs.",
+    "prompt": "Build a health calculator app with: a BMI calculator accepting height (cm) and weight (kg) that displays BMI value, category (Underweight < 18.5, Normal 18.5–24.9, Overweight 25–29.9, Obese ≥ 30), and the ideal weight range for the entered height; save every BMI check to a history table with timestamp; a line chart showing BMI trend over the last 10 saved entries; and a calorie needs calculator using the Mifflin-St Jeor equation with inputs for age, sex, and activity level (Sedentary/Light/Moderate/Active/Very Active)."
+  },
+  {
+    "id": "loan_emi",
+    "category": "Utilities",
+    "name": "Loan EMI Calculator",
+    "description": "Calculate EMI, generate an amortisation schedule, and compare loan options.",
+    "prompt": "Build a loan EMI calculator with: inputs for principal (Rs), annual interest rate (%), and tenure (months); metric cards showing monthly EMI, total payment, and total interest paid; a full amortisation schedule table with columns Month, Opening Balance, EMI, Principal Component, Interest Component, Closing Balance; a pie chart showing principal vs total interest breakdown; and a loan comparison section where the user can enter up to 3 different loan scenarios and see them side-by-side in a table sorted by total cost."
+  },
+  {
+    "id": "attendance_manager",
+    "category": "Utilities",
+    "name": "Attendance Management",
+    "description": "Mark daily attendance for students and flag those below 75%.",
+    "prompt": "Build a student attendance management system with: add/remove students (name, roll number, class/section); a daily attendance form where the teacher selects a date and marks each student as Present, Absent, or Late; a report view showing each student's total present days, total absent days, and attendance percentage over a selected date range; a warning list highlighting students with attendance below 75%; and a bar chart showing the class-wide attendance percentage per week."
+  },
+  {
+    "id": "employee_leave",
+    "category": "Utilities",
+    "name": "Employee Leave Manager",
+    "description": "Submit, approve, and track employee leave with balance monitoring.",
+    "prompt": "Build an employee leave management system with: register employees (name, department, email); each employee starts with 20 Annual, 10 Sick, and 5 Casual leave days per calendar year; apply for leave (select employee, leave type, start date, end date, reason) — validate that sufficient balance exists; an admin approval view listing pending requests with Approve and Reject buttons and an optional comment; a leave balance dashboard showing remaining days per employee per type; and a bar chart of leave taken by department this month."
+  }
+]

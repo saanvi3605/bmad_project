@@ -114,10 +114,13 @@ class TestFixtureBlock:
         assert "import gc" in FIXTURE_BLOCK
 
     def test_fixture_block_imports_from_generated_app(self):
-        assert "from generated_app import app, init_db" in FIXTURE_BLOCK
+        # Streamlit apps have no ASGI 'app' object; the fixture imports init_db only
+        assert "from generated_app import init_db" in FIXTURE_BLOCK
 
-    def test_fixture_block_uses_test_client(self):
-        assert "TestClient" in FIXTURE_BLOCK
+    def test_fixture_block_uses_sqlite_connection(self):
+        # Streamlit apps are tested via sqlite3.Connection, not an HTTP TestClient
+        assert "sqlite3.connect" in FIXTURE_BLOCK
+        assert "@pytest.fixture" in FIXTURE_BLOCK
 
     def test_fixture_block_cleans_up_db(self):
         assert "test_app.db" in FIXTURE_BLOCK

@@ -42,7 +42,8 @@ class TestLazyInitialization:
 
     def test_get_llm_builds_on_first_call(self):
         mock = MagicMock()
-        with patch("core.llm_factory.build_llm", return_value=mock):
+        # Patch the name as it exists in agent_runner's local namespace
+        with patch("core.agent_runner.build_llm", return_value=mock):
             import core.agent_runner as ar
             result = ar._get_llm()
             assert result is mock
@@ -50,11 +51,11 @@ class TestLazyInitialization:
 
     def test_get_llm_reuses_singleton(self):
         mock = MagicMock()
-        with patch("core.llm_factory.build_llm", return_value=mock) as mock_build:
+        with patch("core.agent_runner.build_llm", return_value=mock) as mock_build:
             import core.agent_runner as ar
             ar._get_llm()
             ar._get_llm()
-            # build_llm called only once
+            # build_llm should be called only once — second call reuses singleton
             mock_build.assert_called_once()
 
     def test_monkeypatch_llm_before_call(self):
@@ -91,7 +92,8 @@ class TestExtractTokens:
         from core.agent_runner import extract_tokens
         resp = MagicMock()
         resp.usage_metadata = None
-        resp.response_metadata = {}
+        # Set to None so the response_metadata fallback also fails → warning emitted
+        resp.response_metadata = None
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             inp, out = extract_tokens(resp)

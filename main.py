@@ -61,12 +61,10 @@ def run(user_request: str) -> None:
     )
 
     print("Starting pipeline...\n")
-    invoke_cfg = (
-        {"callbacks": [langfuse_handler]}
-        if langfuse_handler is not None and hasattr(langfuse_handler, "on_llm_start")
-        else {}
-    )
-    final_state = app.invoke(initial_state, invoke_cfg)
+    # Do NOT pass the handler to app.invoke() — it lives in
+    # state["langfuse_handler"] and reaches llm.invoke() through
+    # agent_runner.run_agent(). Passing it here too causes duplicate spans.
+    final_state = app.invoke(initial_state)
 
     # Flush Langfuse
     try:
@@ -96,6 +94,19 @@ def run(user_request: str) -> None:
     if test_file:
         print(f"\nTest file: {test_file}")
         print(f"Run tests: python -m pytest {test_file} -v")
+
+    readme_file = final_state.get("readme_file", "")
+    if readme_file:
+        print(f"README:    {readme_file}")
+
+    eval_scores = final_state.get("eval_scores") or {}
+    if eval_scores and "overall" in eval_scores:
+        ov = eval_scores["overall"]
+        print(f"\nEval scores:")
+        print(f"  Overall:              {ov['value']:.2f}  ({ov['value']*100:.0f}%)")
+        for dim in ["feature_coverage", "requirement_alignment", "code_quality", "semantic_overlap"]:
+            d = eval_scores.get(dim, {})
+            print(f"  {dim:<25} {d.get('value', 0.0):.2f}")
 
     output_dir = final_state.get("output_dir", "")
     if output_dir:

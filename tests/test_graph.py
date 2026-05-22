@@ -66,11 +66,10 @@ class TestRoutingFunctions:
         from agents_impl.validator_agent import should_fix
         # passed
         assert should_fix({"validation_passed": True, "validation_attempts": 0}) == "passed"
-        # fix
-        state = {"validation_passed": False, "validation_attempts": 0}
-        assert should_fix(state) == "fix"
-        # max_attempts
-        assert should_fix({"validation_passed": False, "validation_attempts": 2}) == "max_attempts"
+        # fix — validator_agent increments attempts before routing; simulate attempts=1
+        assert should_fix({"validation_passed": False, "validation_attempts": 1}) == "fix"
+        # max_attempts — threshold is > 2, so attempts must be >= 3
+        assert should_fix({"validation_passed": False, "validation_attempts": 3}) == "max_attempts"
 
     def test_should_retry_all_return_values(self):
         from agents_impl.reviewer_agent import should_retry

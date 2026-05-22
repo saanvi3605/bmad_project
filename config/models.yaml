@@ -17,7 +17,7 @@
 # Planner stays on 8b — architect (70b) compensates for any weak spec.
 llm:
   provider: groq
-  model: llama-3.3-70b-versatile
+  model: meta-llama/llama-4-scout-17b-16e-instruct
   temperature: 0.1
   max_tokens: 4096
   request_timeout: 120
@@ -44,6 +44,9 @@ retry_limits:
   validator_max_retries: 2
   # Reviewer → Developer loop.  Matches current should_retry() ceiling.
   reviewer_max_retries: 2
+  # Executor → Developer loop (runtime self-healing).
+  # App crash stderr is sent back to Developer for up to N fix attempts.
+  executor_max_retries: 2
 
 # ── Executor subprocess settings ─────────────────────────────────────────────
 executor:
@@ -55,6 +58,7 @@ executor:
   # Path written by executor_agent and read by the Streamlit UI for download.
   output_file: outputs/generated_app.py
   test_output_file: outputs/test_generated_app.py
+  readme_output_file: outputs/README.md
 
 # ── Session archiving ─────────────────────────────────────────────────────────
 session:

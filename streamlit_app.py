@@ -11,20 +11,6 @@ Architecture:
   - Main thread: Streamlit UI rendering, polling for updates
   - Worker thread: app.invoke() → final state pushed to queue on completion
   - Queue: single-item queue; worker posts (final_state, error) tuple when done
-
-Features:
-  - Non-blocking UI with live status indicator
-  - Tabbed results: Generated Code | Test File | Execution | Agent Log | Observability
-  - Download buttons for generated_app.py and test_generated_app.py
-  - Pipeline reset button
-  - Error display
-  - Per-agent token/cost summary table
-  - Pipeline summary cards
-
-Requirements:
-  - app.invoke() MUST NOT run on the Streamlit main thread
-  - generated_app.py and test_generated_app.py must be written to disk
-    (handled by executor_agent and test_writer_agent respectively)
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -42,18 +28,371 @@ from typing import Any, Optional
 
 import streamlit as st
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="BMAD Pipeline",
-    page_icon="🤖",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Port helper (mirrors executor_agent logic, uses 8503+ to avoid clash) ────
+# ── Global CSS injection ──────────────────────────────────────────────────────
+def _inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        /* ── Base ── */
+        .stApp { background: #F1F5F9; }
+        .main .block-container {
+            padding: 2rem 2.5rem 3rem;
+            max-width: 1200px;
+        }
+
+        /* ── Hide Streamlit chrome ── */
+        #MainMenu, footer, header { visibility: hidden; }
+        [data-testid="stDecoration"] { display: none; }
+
+        /* ── Sidebar ── */
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0F172A 0%, #1E1B4B 100%);
+            border-right: none;
+        }
+        [data-testid="stSidebar"] * { color: #CBD5E1 !important; }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color: #F1F5F9 !important;
+            font-weight: 700;
+        }
+        [data-testid="stSidebar"] .stSelectbox label,
+        [data-testid="stSidebar"] .stTextInput label { color: #94A3B8 !important; }
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background: rgba(255,255,255,0.07) !important;
+            border-color: rgba(255,255,255,0.15) !important;
+            color: #F1F5F9 !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"] svg { fill: #94A3B8 !important; }
+        [data-testid="stSidebar"] .stCaption { color: #64748B !important; }
+        [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.1) !important; }
+        [data-testid="stSidebar"] code {
+            background: rgba(255,255,255,0.1) !important;
+            color: #A5B4FC !important;
+            border-radius: 4px;
+        }
+        [data-testid="stSidebar"] .stButton > button {
+            background: linear-gradient(135deg, #6366F1, #8B5CF6) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            box-shadow: 0 4px 12px rgba(99,102,241,0.35) !important;
+            transition: opacity 0.2s !important;
+        }
+        [data-testid="stSidebar"] .stButton > button:hover { opacity: 0.9 !important; }
+        [data-testid="stSidebar"] .stButton > button:disabled {
+            opacity: 0.4 !important;
+            cursor: not-allowed !important;
+        }
+
+        /* ── Cards / Metric containers ── */
+        [data-testid="metric-container"] {
+            background: #FFFFFF !important;
+            border: 1px solid #E2E8F0 !important;
+            border-radius: 14px !important;
+            padding: 1.1rem 1.4rem !important;
+            box-shadow: 0 1px 4px rgba(15,23,42,0.06) !important;
+        }
+        /* Force ALL text inside metric cards to be visible */
+        [data-testid="metric-container"],
+        [data-testid="metric-container"] * {
+            color: #0F172A !important;
+        }
+        [data-testid="metric-container"] [data-testid="stMetricLabel"],
+        [data-testid="metric-container"] label,
+        [data-testid="metric-container"] p {
+            color: #64748B !important;
+            font-size: 0.78rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.04em !important;
+            text-transform: uppercase !important;
+        }
+        [data-testid="metric-container"] [data-testid="stMetricValue"],
+        [data-testid="metric-container"] [data-testid="stMetricValue"] * {
+            color: #0F172A !important;
+            font-weight: 800 !important;
+            font-size: 1.8rem !important;
+        }
+
+        /* ── All buttons — base rule ensures text is always visible ── */
+        .stButton > button {
+            color: #1E293B !important;
+            font-weight: 600 !important;
+            border-radius: 10px !important;
+            height: 2.8rem !important;
+            transition: all 0.2s !important;
+        }
+
+        /* ── Primary button ── */
+        .stButton > button[kind="primary"],
+        [data-testid="baseButton-primary"] {
+            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%) !important;
+            border: none !important;
+            color: #FFFFFF !important;
+            font-weight: 700 !important;
+            font-size: 0.95rem !important;
+            letter-spacing: 0.01em !important;
+            box-shadow: 0 4px 14px rgba(99,102,241,0.35) !important;
+        }
+        .stButton > button[kind="primary"]:hover,
+        [data-testid="baseButton-primary"]:hover {
+            box-shadow: 0 6px 20px rgba(99,102,241,0.45) !important;
+            transform: translateY(-1px) !important;
+            color: #FFFFFF !important;
+        }
+        .stButton > button[kind="primary"]:disabled,
+        [data-testid="baseButton-primary"]:disabled {
+            background: #C7D2FE !important;
+            box-shadow: none !important;
+            transform: none !important;
+            color: #FFFFFF !important;
+        }
+
+        /* ── Secondary / default button ── */
+        .stButton > button[kind="secondary"],
+        [data-testid="baseButton-secondary"] {
+            background: #FFFFFF !important;
+            border: 1.5px solid #CBD5E1 !important;
+            color: #374151 !important;
+        }
+        .stButton > button[kind="secondary"]:hover,
+        [data-testid="baseButton-secondary"]:hover {
+            border-color: #6366F1 !important;
+            color: #4F46E5 !important;
+            background: #EEF2FF !important;
+        }
+
+        /* ── Tabs ── */
+        .stTabs [data-baseweb="tab-list"] {
+            background: #FFFFFF;
+            border-radius: 12px;
+            padding: 5px;
+            gap: 4px;
+            border: 1px solid #E2E8F0;
+            box-shadow: 0 1px 3px rgba(15,23,42,0.04);
+        }
+        .stTabs [data-baseweb="tab"] {
+            border-radius: 9px;
+            padding: 0.45rem 1rem;
+            color: #64748B;
+            font-weight: 500;
+            font-size: 0.85rem;
+        }
+        .stTabs [aria-selected="true"] {
+            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%) !important;
+            color: white !important;
+            font-weight: 700 !important;
+            box-shadow: 0 2px 8px rgba(99,102,241,0.3);
+        }
+        .stTabs [data-baseweb="tab-highlight"] { display: none; }
+        .stTabs [data-baseweb="tab-border"] { display: none; }
+
+        /* ── Text input / Text area ── */
+        .stTextArea textarea, .stTextInput input {
+            border-radius: 10px !important;
+            border: 1.5px solid #E2E8F0 !important;
+            background: #FFFFFF !important;
+            color: #1E293B !important;
+            font-size: 0.95rem !important;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .stTextArea textarea:focus, .stTextInput input:focus {
+            border-color: #6366F1 !important;
+            box-shadow: 0 0 0 3px rgba(99,102,241,0.12) !important;
+        }
+        .stTextArea textarea::placeholder, .stTextInput input::placeholder {
+            color: #94A3B8 !important;
+        }
+        /* Labels for all form widgets */
+        .stTextArea label,
+        .stTextInput label,
+        .stSelectbox label,
+        .stMultiSelect label,
+        .stSlider label,
+        label[data-testid="stWidgetLabel"] {
+            color: #374151 !important;
+            font-weight: 600 !important;
+            font-size: 0.85rem !important;
+        }
+        /* Headings — keep them dark on the light background */
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3 {
+            color: #0F172A !important;
+        }
+        /* Caption text */
+        .stCaption, [data-testid="stCaptionContainer"] {
+            color: #64748B !important;
+        }
+
+        /* ── Code blocks ── */
+        .stCode { border-radius: 10px !important; overflow: hidden; }
+        pre { border-radius: 10px !important; }
+
+        /* ── Expander ── */
+        [data-testid="stExpander"] {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0 !important;
+            border-radius: 10px !important;
+            box-shadow: none !important;
+        }
+
+        /* ── Data frame ── */
+        [data-testid="stDataFrame"] {
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #E2E8F0;
+        }
+
+        /* ── Alerts ── */
+        .stSuccess { border-radius: 10px !important; border-left: 4px solid #10B981 !important; }
+        .stError   { border-radius: 10px !important; border-left: 4px solid #EF4444 !important; }
+        .stWarning { border-radius: 10px !important; border-left: 4px solid #F59E0B !important; }
+        .stInfo    { border-radius: 10px !important; border-left: 4px solid #6366F1 !important; }
+
+        /* ── Progress bar ── */
+        [data-testid="stProgress"] > div > div {
+            background: linear-gradient(90deg, #6366F1, #8B5CF6) !important;
+            border-radius: 9999px;
+        }
+
+        /* ── Custom stat card ── */
+        .stat-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 14px;
+            padding: 1.1rem 1.4rem;
+            box-shadow: 0 1px 4px rgba(15,23,42,0.05);
+        }
+        .stat-card .label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #94A3B8;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            margin-bottom: 0.2rem;
+        }
+        .stat-card .value {
+            font-size: 1.55rem;
+            font-weight: 800;
+            color: #0F172A;
+            line-height: 1.2;
+        }
+        .stat-card .sub {
+            font-size: 0.75rem;
+            color: #94A3B8;
+            margin-top: 0.15rem;
+        }
+
+        /* ── Badge ── */
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 9999px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+        }
+        .badge-indigo { background: #EEF2FF; color: #4F46E5; }
+        .badge-green  { background: #D1FAE5; color: #065F46; }
+        .badge-red    { background: #FEE2E2; color: #991B1B; }
+        .badge-amber  { background: #FEF3C7; color: #92400E; }
+
+        /* ── Divider ── */
+        .light-divider {
+            border: none;
+            border-top: 1px solid #E2E8F0;
+            margin: 1.5rem 0;
+        }
+
+        /* ── Pipeline step breadcrumb ── */
+        .pipeline-steps {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin: 0.5rem 0 1.5rem;
+        }
+        .step-pill {
+            background: #EEF2FF;
+            color: #4F46E5;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .step-arrow { color: #CBD5E1; font-size: 0.75rem; }
+
+        /* ── Eval score row ── */
+        .eval-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #F8FAFC;
+            border-radius: 10px;
+            margin-bottom: 8px;
+        }
+        .eval-label { font-weight: 600; color: #334155; font-size: 0.85rem; flex: 0 0 180px; }
+        .eval-bar-wrap { flex: 1; background: #E2E8F0; border-radius: 9999px; height: 8px; overflow: hidden; }
+        .eval-bar { height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #6366F1, #8B5CF6); }
+        .eval-score { font-weight: 800; color: #0F172A; font-size: 0.85rem; flex: 0 0 38px; text-align: right; }
+
+        /* ── Hero title ── */
+        .hero-title {
+            font-size: 2.2rem;
+            font-weight: 900;
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 60%, #A855F7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1.15;
+            margin-bottom: 0.2rem;
+        }
+        .hero-sub {
+            color: #64748B;
+            font-size: 0.95rem;
+            font-weight: 400;
+            margin-bottom: 0.5rem;
+        }
+
+        /* ── Running pulse ── */
+        @keyframes pulse {
+            0%   { opacity: 1; }
+            50%  { opacity: 0.45; }
+            100% { opacity: 1; }
+        }
+        .pulse-dot {
+            display: inline-block;
+            width: 9px; height: 9px;
+            border-radius: 50%;
+            background: #6366F1;
+            margin-right: 8px;
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_css()
+
+# ── Port helper ───────────────────────────────────────────────────────────────
 
 def _find_free_port(preferred: int = 8503, scan_limit: int = 20) -> int:
-    """Return preferred port if free, otherwise the next available one."""
     for port in range(preferred, preferred + scan_limit):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -71,7 +410,6 @@ _HISTORY_DB = str(pathlib.Path(__file__).parent / "pipeline_history.db")
 
 
 def init_history_db() -> None:
-    """Create the runs table if it doesn't exist. Called once at startup."""
     try:
         conn = sqlite3.connect(_HISTORY_DB)
         conn.execute("""
@@ -97,11 +435,10 @@ def init_history_db() -> None:
                 created_at       TEXT    DEFAULT (datetime('now'))
             )
         """)
-        # Migrate existing DBs that pre-date the refined_prompt column
         try:
             conn.execute("ALTER TABLE runs ADD COLUMN refined_prompt TEXT")
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
         conn.commit()
         conn.close()
     except Exception:
@@ -113,7 +450,6 @@ def save_run_to_history(
     final_state: Optional[dict],
     error: Optional[str],
 ) -> None:
-    """Persist one pipeline run to pipeline_history.db. Never raises."""
     try:
         from core.observability import get_pipeline_summary
         summary = get_pipeline_summary(final_state) if final_state else None
@@ -150,14 +486,13 @@ def save_run_to_history(
         ))
         conn.commit()
         conn.close()
-        load_history.clear()  # bust cache so History tab shows the new row
+        load_history.clear()
     except Exception:
         pass
 
 
 @st.cache_data(ttl=30)
 def load_history() -> list[dict]:
-    """Return all runs from history DB, newest first. Cached for 30 s."""
     try:
         conn = sqlite3.connect(_HISTORY_DB)
         conn.row_factory = sqlite3.Row
@@ -170,32 +505,38 @@ def load_history() -> list[dict]:
         return []
 
 
-# ── Lazy imports (avoid triggering LLM build at startup) ─────────────────────
-
+# ── Lazy imports ──────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def _load_app():
-    """Load the compiled LangGraph app once, cached across reruns."""
     from orchestration.graph import app as langgraph_app
     return langgraph_app
 
 
+@st.cache_data
+def _load_prompt_templates() -> list[dict]:
+    import json
+    try:
+        tpl_path = pathlib.Path(__file__).parent / "config" / "prompt_templates.json"
+        return json.loads(tpl_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
 @st.cache_resource
 def _load_pipeline_rules() -> str:
-    """Load pipeline rules suffix from config/pipeline_rules.yaml."""
     try:
-        import yaml, pathlib
+        import yaml
         cfg_path = pathlib.Path(__file__).parent / "config" / "pipeline_rules.yaml"
-        with open(cfg_path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         return data.get("prompt_suffix", "")
     except Exception:
         return ""
 
 
-# ── Session state initialisation ─────────────────────────────────────────────
+# ── Session state ─────────────────────────────────────────────────────────────
 
-init_history_db()  # idempotent — runs on every Streamlit rerun but is a no-op after first call
+init_history_db()
 
 
 def _init_session():
@@ -205,12 +546,11 @@ def _init_session():
         "error": None,
         "start_time": None,
         "result_queue": queue.Queue(maxsize=1),
-        # Quick-launch state
-        "app_process": None,   # subprocess.Popen for the running generated app
-        "app_port": None,      # port it was started on
-        "test_output": None,   # captured pytest output
-        # History re-run
-        "rerun_prompt": None,  # set by History tab to pre-fill the text area
+        "app_process": None,
+        "app_port": None,
+        "test_output": None,
+        "rerun_prompt": None,
+        "template_prompt": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -219,19 +559,10 @@ def _init_session():
 
 _init_session()
 
+
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
-
-def _run_pipeline_worker(
-    user_request: str,
-    result_q: queue.Queue,
-) -> None:
-    """
-    Execute the full LangGraph pipeline in a background thread.
-
-    Pushes (final_state, None) on success or (None, str(error)) on failure.
-    Always saves the run to pipeline_history.db regardless of outcome.
-    """
+def _run_pipeline_worker(user_request: str, result_q: queue.Queue) -> None:
     final_state: Optional[dict] = None
     error_msg: Optional[str] = None
     try:
@@ -250,7 +581,6 @@ def _run_pipeline_worker(
             langfuse_handler=langfuse_handler,
         )
 
-        # ── Clean up stale outputs from previous run ──────────────────
         for stale in [
             "outputs/generated_app.py",
             "outputs/test_generated_app.py",
@@ -263,126 +593,321 @@ def _run_pipeline_worker(
                 pass
 
         langgraph_app = _load_app()
-        invoke_cfg = (
-            {"callbacks": [langfuse_handler]}
-            if langfuse_handler is not None and hasattr(langfuse_handler, "on_llm_start")
-            else {}
-        )
-        final_state = langgraph_app.invoke(initial_state, invoke_cfg)
+        # Do NOT pass the handler to app.invoke() — it is already stored in
+        # state["langfuse_handler"] and gets passed to llm.invoke() inside
+        # each agent via agent_runner.run_agent(). Passing it here too
+        # creates duplicate callback registrations → orphaned spans → no
+        # flowchart in Langfuse.
+        final_state = langgraph_app.invoke(initial_state)
         result_q.put((final_state, None))
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         error_msg = str(exc)
         result_q.put((None, error_msg))
 
     finally:
-        # Always flush Langfuse — runs on both success and error paths.
-        # Wrapped in its own try/except so a flush failure never crashes the thread.
         try:
             from core.observability import flush
             flush()
         except Exception:
             pass
-        # Save to history regardless of outcome — never let this crash the thread
         save_run_to_history(user_request, final_state, error_msg)
 
 
-# ── UI helpers ────────────────────────────────────────────────────────────────
-
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def _render_sidebar():
     with st.sidebar:
-        st.title("⚙️ BMAD Config")
-        st.markdown("---")
+        # ── Branding ──────────────────────────────────────────────────────
+        st.markdown(
+            """
+            <div style="padding:1rem 0 0.5rem">
+              <div style="font-size:1.5rem;font-weight:900;color:#F1F5F9;letter-spacing:-0.02em">
+                ⚡ BMAD
+              </div>
+              <div style="font-size:0.72rem;color:#64748B;font-weight:500;
+                          letter-spacing:0.08em;text-transform:uppercase;margin-top:2px">
+                AI Orchestration Pipeline
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0.5rem 0 1rem"/>', unsafe_allow_html=True)
 
+        # ── Template library ──────────────────────────────────────────────
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#6366F1;'
+            'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem">'
+            '📚 Quick-Start Templates</div>',
+            unsafe_allow_html=True,
+        )
+        templates = _load_prompt_templates()
+        if templates:
+            categories = ["All"] + sorted({t["category"] for t in templates})
+            sel_cat = st.selectbox(
+                "Category",
+                categories,
+                key="tpl_category",
+                label_visibility="collapsed",
+            )
+            filtered = (
+                templates if sel_cat == "All"
+                else [t for t in templates if t["category"] == sel_cat]
+            )
+
+            def _tpl_label(t: dict) -> str:
+                return t["name"] if sel_cat != "All" else f"[{t['category']}]  {t['name']}"
+
+            option_names = [_tpl_label(t) for t in filtered]
+            sel_idx = st.selectbox(
+                "Template",
+                range(len(filtered)),
+                format_func=lambda i: option_names[i],
+                key="tpl_selected",
+                label_visibility="collapsed",
+            )
+            sel_tpl = filtered[sel_idx]
+            st.caption(sel_tpl["description"])
+
+            if st.button(
+                "Use this template",
+                use_container_width=True,
+                disabled=st.session_state.get("running", False),
+            ):
+                st.session_state["template_prompt"] = sel_tpl["prompt"]
+                st.rerun()
+        else:
+            st.caption("_(template file not found)_")
+
+        st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0"/>', unsafe_allow_html=True)
+
+        # ── Config ────────────────────────────────────────────────────────
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#6366F1;'
+            'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem">'
+            '⚙️ Config</div>',
+            unsafe_allow_html=True,
+        )
         try:
-            import yaml, pathlib
+            import yaml
             cfg = yaml.safe_load(
                 (pathlib.Path(__file__).parent / "config" / "models.yaml").read_text()
             )
             llm_cfg = cfg.get("llm", {})
-            st.subheader("LLM")
-            st.caption(f"Model: `{llm_cfg.get('model', 'N/A')}`")
-            st.caption(f"Temperature: `{llm_cfg.get('temperature', 'N/A')}`")
-            st.caption(f"Max tokens: `{llm_cfg.get('max_tokens', 'N/A')}`")
-
-            exec_cfg = cfg.get("executor", {})
-            st.subheader("Executor")
-            st.caption(f"Startup wait: `{exec_cfg.get('startup_wait_seconds', 8)}s`")
-            st.caption(f"Output: `{exec_cfg.get('output_file', 'outputs/generated_app.py')}`")
+            st.caption(f"**Model** `{llm_cfg.get('model', 'N/A')}`")
+            st.caption(f"**Temp** `{llm_cfg.get('temperature', 'N/A')}` | **Max tokens** `{llm_cfg.get('max_tokens', 'N/A')}`")
 
             retry_cfg = cfg.get("retry_limits", {})
-            st.subheader("Retry Limits")
-            st.caption(f"Validator loop: `{retry_cfg.get('validator_max_retries', 2)}`")
-            st.caption(f"Reviewer loop: `{retry_cfg.get('reviewer_max_retries', 2)}`")
+            st.caption(
+                f"**Validator retries** `{retry_cfg.get('validator_max_retries', 2)}` | "
+                f"**Reviewer retries** `{retry_cfg.get('reviewer_max_retries', 2)}`"
+            )
         except Exception as e:
-            st.warning(f"Could not load config: {e}")
+            st.caption(f"Could not load config: {e}")
 
-        st.markdown("---")
-        st.subheader("Pipeline")
-        st.markdown("""
-```
-PromptRefiner
-      ↓
-ComplexityScorer (1-10)
-      ↓
-Planner → Architect → Developer
-                ↓
-            Validator ⟳ (2x)
-                ↓
-            Tester → Reviewer ⟳ (2x)
-                ↓
-            Executor → TestWriter
-```
-""")
+        st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0"/>', unsafe_allow_html=True)
 
+        # ── Pipeline diagram ──────────────────────────────────────────────
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#6366F1;'
+            'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.75rem">'
+            '🔗 Pipeline</div>',
+            unsafe_allow_html=True,
+        )
+        steps = [
+            ("PromptRefiner",    "#6366F1"),
+            ("ComplexityScorer","#7C3AED"),
+            ("Planner",         "#8B5CF6"),
+            ("Architect",       "#A78BFA"),
+            ("Developer",       "#6366F1"),
+            ("Validator ⟳",    "#0EA5E9"),
+            ("Tester",          "#0EA5E9"),
+            ("Reviewer ⟳",     "#0EA5E9"),
+            ("Executor",        "#10B981"),
+            ("TestWriter",      "#10B981"),
+            ("ReadmeWriter",    "#10B981"),
+            ("EvalAgent",       "#F59E0B"),
+        ]
+        for i, (name, color) in enumerate(steps):
+            connector = "" if i == 0 else (
+                '<div style="width:2px;height:12px;background:rgba(255,255,255,0.12);'
+                'margin:0 0 0 14px"></div>'
+            )
+            st.markdown(
+                f'{connector}<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">'
+                f'<div style="width:8px;height:8px;border-radius:50%;background:{color};flex-shrink:0"></div>'
+                f'<span style="font-size:0.75rem;color:#CBD5E1;font-weight:500">{name}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Langfuse dashboard button ──────────────────────────────────────
+        st.markdown(
+            '<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0"/>',
+            unsafe_allow_html=True,
+        )
+        if _langfuse_configured():
+            dashboard_url = _langfuse_base_url()
+            st.link_button(
+                "📊 Open Langfuse Dashboard",
+                url=dashboard_url,
+                use_container_width=True,
+            )
+        else:
+            st.markdown(
+                '<div style="font-size:0.72rem;color:#475569;text-align:center;padding:0.5rem 0">'
+                'Set <code style="color:#A5B4FC">LANGFUSE_PUBLIC_KEY</code> &amp; '
+                '<code style="color:#A5B4FC">SECRET_KEY</code> in <code style="color:#A5B4FC">.env</code>'
+                ' to enable tracing.</div>',
+                unsafe_allow_html=True,
+            )
+
+
+# ── Langfuse URL helpers ──────────────────────────────────────────────────────
+
+def _langfuse_base_url() -> str:
+    """Return the Langfuse host from env (default: cloud.langfuse.com)."""
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip("/")
+    # Ensure scheme is present
+    if not host.startswith("http"):
+        host = "https://" + host
+    return host
+
+
+def _langfuse_session_url(session_id: str) -> str:
+    """Deep-link to a specific session in the Langfuse dashboard."""
+    return f"{_langfuse_base_url()}/sessions/{session_id}"
+
+
+def _langfuse_configured() -> bool:
+    """True if both Langfuse API keys are set."""
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    return bool(os.getenv("LANGFUSE_PUBLIC_KEY")) and bool(os.getenv("LANGFUSE_SECRET_KEY"))
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _render_agent_log_table(agent_log: list):
-    """Render per-agent token/cost/latency table."""
     if not agent_log:
-        st.info("No agent log entries.")
+        st.info("No agent log entries yet.")
         return
-
     import pandas as pd
     rows = []
     for rec in agent_log:
-        if hasattr(rec, "to_dict"):
-            rows.append(rec.to_dict())
-        elif isinstance(rec, dict):
-            rows.append(rec)
-
+        rows.append(rec.to_dict() if hasattr(rec, "to_dict") else rec)
     if rows:
         df = pd.DataFrame(rows)
-        # Format columns
         if "timestamp_utc" in df.columns:
             df = df.drop(columns=["timestamp_utc"])
         if "cost_usd" in df.columns:
             df["cost_usd"] = df["cost_usd"].apply(lambda x: f"${x:.6f}")
         if "latency_ms" in df.columns:
-            df["latency_ms"] = df["latency_ms"].apply(lambda x: f"{x:.0f}ms")
-        st.dataframe(df, use_container_width=True)
+            df["latency_ms"] = df["latency_ms"].apply(lambda x: f"{x:.0f} ms")
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def _render_pipeline_summary(final_state: dict):
-    """Render pipeline summary metric cards."""
     from core.observability import get_pipeline_summary
-    summary = get_pipeline_summary(final_state)
+    s = get_pipeline_summary(final_state)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Tokens", f"{s.total_tokens:,}")
+    c2.metric("Est. Cost", f"${s.total_cost_usd:.4f}")
+    c3.metric("Latency", f"{s.total_latency_ms/1000:.1f}s")
+    c4.metric("Agents", str(s.agent_count))
+    if s.agents_called:
+        st.markdown(
+            '<div style="font-size:0.78rem;color:#64748B;margin-top:0.25rem">'
+            + " &rarr; ".join(s.agents_called)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Tokens", f"{summary.total_tokens:,}")
-    col2.metric("Estimated Cost", f"${summary.total_cost_usd:.4f}")
-    col3.metric("Total Latency", f"{summary.total_latency_ms/1000:.1f}s")
-    col4.metric("Agents Called", str(summary.agent_count))
 
-    if summary.agents_called:
-        st.caption("Agent execution order: " + " → ".join(summary.agents_called))
+def _color_for_score(v: float) -> str:
+    if v >= 0.75:
+        return "#10B981"
+    if v >= 0.5:
+        return "#F59E0B"
+    return "#EF4444"
+
+
+def _render_eval_scores(eval_scores: dict):
+    ov = eval_scores.get("overall", {})
+    ov_val = float(ov.get("value", 0.0))
+    color = _color_for_score(ov_val)
+
+    # Overall score card
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#6366F1,#8B5CF6);
+                    border-radius:16px;padding:1.4rem 1.8rem;
+                    margin-bottom:1rem;display:flex;align-items:center;gap:1.5rem">
+          <div>
+            <div style="font-size:0.72rem;font-weight:700;color:rgba(255,255,255,0.7);
+                        letter-spacing:0.1em;text-transform:uppercase">Overall Score</div>
+            <div style="font-size:2.8rem;font-weight:900;color:#fff;line-height:1">
+              {ov_val*100:.0f}<span style="font-size:1.2rem;font-weight:600">%</span>
+            </div>
+          </div>
+          <div style="flex:1;font-size:0.8rem;color:rgba(255,255,255,0.8)">
+            {ov.get('reason', '')}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Dimension breakdown
+    DIMS = [
+        ("feature_coverage",      "Feature Coverage",      "LLM judge: spec vs code"),
+        ("requirement_alignment", "Requirement Alignment", "LLM judge: request vs code"),
+        ("code_quality",          "Code Quality",          "Validation + review + execution"),
+        ("semantic_overlap",      "Semantic Overlap",      "Jaccard similarity (NLP)"),
+    ]
+    st.markdown(
+        '<div style="font-size:0.78rem;font-weight:700;color:#64748B;'
+        'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:0.75rem">'
+        'Dimension Breakdown</div>',
+        unsafe_allow_html=True,
+    )
+    for key, label, tooltip in DIMS:
+        dim = eval_scores.get(key, {})
+        val = float(dim.get("value", 0.0))
+        bar_color = _color_for_score(val)
+        reason = dim.get("reason", "")
+        st.markdown(
+            f"""
+            <div class="eval-row" title="{tooltip}">
+              <div class="eval-label">{label}</div>
+              <div class="eval-bar-wrap">
+                <div class="eval-bar" style="width:{val*100:.1f}%;background:{bar_color}"></div>
+              </div>
+              <div class="eval-score" style="color:{bar_color}">{val:.2f}</div>
+            </div>
+            <div style="font-size:0.72rem;color:#94A3B8;padding:0 14px;margin-bottom:4px">{reason}</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    latency = eval_scores.get("eval_latency_ms", 0)
+    if latency:
+        st.markdown(
+            f'<div style="font-size:0.72rem;color:#94A3B8;margin-top:0.5rem">'
+            f'Eval completed in {latency/1000:.1f}s</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_results(final_state: dict):
-    """Render all pipeline results in a tabbed layout."""
     tab_code, tab_tests, tab_exec, tab_log, tab_obs, tab_hist = st.tabs([
-        "📄 Generated Code",
-        "🧪 Test File",
+        "📄 Code",
+        "🧪 Tests",
         "▶️ Execution",
         "📋 Agent Log",
         "📊 Observability",
@@ -391,70 +916,69 @@ def _render_results(final_state: dict):
 
     # ── Tab 1: Generated Code ──────────────────────────────────────────────
     with tab_code:
-        st.subheader("Generated Application")
         code = final_state.get("code") or ""
         if code:
+            col_dl, _ = st.columns([1, 3])
+            with col_dl:
+                st.download_button(
+                    "⬇️ Download generated_app.py",
+                    data=code,
+                    file_name="generated_app.py",
+                    mime="text/x-python",
+                    use_container_width=True,
+                )
             st.code(code, language="python", line_numbers=True)
-            st.download_button(
-                label="⬇️ Download generated_app.py",
-                data=code,
-                file_name="generated_app.py",
-                mime="text/x-python",
-            )
         else:
             st.warning("No code was generated.")
 
-        # Functional spec and technical design in expanders
-        with st.expander("🔍 Refined Prompt"):
-            st.markdown(final_state.get("refined_prompt") or "_Not available_")
-        with st.expander("📋 Functional Spec"):
-            st.markdown(final_state.get("functional_spec") or "_Not available_")
-        with st.expander("🏗️ Technical Design"):
-            st.markdown(final_state.get("technical_design") or "_Not available_")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            with st.expander("🔮 Refined Prompt"):
+                st.markdown(final_state.get("refined_prompt") or "_Not available_")
+        with col_b:
+            with st.expander("📋 Functional Spec"):
+                st.markdown(final_state.get("functional_spec") or "_Not available_")
+        with col_c:
+            with st.expander("🏗️ Technical Design"):
+                st.markdown(final_state.get("technical_design") or "_Not available_")
 
-    # ── Tab 2: Test File ───────────────────────────────────────────────────
+    # ── Tab 2: Tests ───────────────────────────────────────────────────────
     with tab_tests:
-        st.subheader("Generated pytest File")
         test_file_path = final_state.get("test_file") or ""
         test_code = ""
-
-        # Try to read from disk first (most up-to-date)
         if test_file_path:
             try:
-                with open(test_file_path, "r", encoding="utf-8") as fh:
-                    test_code = fh.read()
+                test_code = pathlib.Path(test_file_path).read_text(encoding="utf-8")
             except FileNotFoundError:
                 pass
-
-        # Fallback: try default path
         if not test_code:
             try:
-                with open("outputs/test_generated_app.py", "r", encoding="utf-8") as fh:
-                    test_code = fh.read()
+                test_code = pathlib.Path("outputs/test_generated_app.py").read_text(encoding="utf-8")
             except FileNotFoundError:
                 pass
 
         if test_code:
+            col_dl2, _ = st.columns([1, 3])
+            with col_dl2:
+                st.download_button(
+                    "⬇️ Download test file",
+                    data=test_code,
+                    file_name="test_generated_app.py",
+                    mime="text/x-python",
+                    use_container_width=True,
+                )
             st.code(test_code, language="python", line_numbers=True)
-            st.download_button(
-                label="⬇️ Download test_generated_app.py",
-                data=test_code,
-                file_name="test_generated_app.py",
-                mime="text/x-python",
-            )
             st.info(f"Run with: `python -m pytest {test_file_path or 'outputs/test_generated_app.py'} -v`")
         else:
             st.warning("No test file was generated.")
 
-        # Test cases in expander
         with st.expander("📝 Test Case Descriptions"):
             st.markdown(final_state.get("test_cases") or "_Not available_")
 
     # ── Tab 3: Execution ───────────────────────────────────────────────────
     with tab_exec:
-        st.subheader("Execution Result")
         exec_result = final_state.get("execution_result") or ""
-        exec_error = final_state.get("execution_error") or ""
+        exec_error  = final_state.get("execution_error") or ""
 
         if exec_result and "successfully" in exec_result.lower():
             st.success(f"✅ {exec_result}")
@@ -464,338 +988,393 @@ def _render_results(final_state: dict):
             st.warning("No execution result recorded.")
 
         if exec_error:
-            st.error("Execution stderr output:")
+            st.error("Execution stderr:")
             st.code(exec_error, language="text")
 
-        output_dir = final_state.get("output_dir")
-        if output_dir:
-            st.caption(f"Session archive: `{output_dir}`")
+        if final_state.get("output_dir"):
+            st.caption(f"Session archive: `{final_state['output_dir']}`")
 
-        # Reviewer feedback
-        review_approved = final_state.get("review_approved")
-        review_feedback = final_state.get("review_feedback") or ""
-        with st.expander("🔍 Code Review Result"):
-            if review_approved:
-                st.success("APPROVED: YES")
-            elif review_approved is False:
-                st.error("APPROVED: NO")
-            else:
-                st.info("Review status unknown")
-            if review_feedback:
-                st.markdown(f"**Feedback:** {review_feedback}")
+        colA, colB = st.columns(2)
+        with colA:
+            with st.expander("🔍 Code Review"):
+                ra = final_state.get("review_approved")
+                rf = final_state.get("review_feedback") or ""
+                if ra:
+                    st.success("Reviewer: APPROVED")
+                elif ra is False:
+                    st.error("Reviewer: REJECTED")
+                else:
+                    st.info("Review status unknown")
+                if rf:
+                    st.markdown(f"**Feedback:** {rf}")
+        with colB:
+            with st.expander("✅ Validation"):
+                vp = final_state.get("validation_passed")
+                ve = final_state.get("validation_error")
+                if vp:
+                    st.success("All static checks passed.")
+                elif vp is False:
+                    st.error(f"Failed: {ve}")
+                else:
+                    st.info("Validation status unknown")
 
-        # Validation info
-        val_passed = final_state.get("validation_passed")
-        val_error = final_state.get("validation_error")
-        with st.expander("✅ Validation Result"):
-            if val_passed:
-                st.success("All validation checks passed.")
-            elif val_passed is False:
-                st.error(f"Validation failed: {val_error}")
+        # ── Quick Launch ───────────────────────────────────────────────
+        st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+            'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.75rem">'
+            'Quick Launch</div>',
+            unsafe_allow_html=True,
+        )
+        col_app, col_tests2 = st.columns(2)
+
+        with col_app:
+            app_file = "outputs/generated_app.py"
+            proc = st.session_state.get("app_process")
+            app_running = proc is not None and proc.poll() is None
+
+            if app_running:
+                port = st.session_state["app_port"]
+                st.link_button(
+                    "🌐 Open Generated App",
+                    f"http://localhost:{port}",
+                    use_container_width=True,
+                    type="primary",
+                )
+                if st.button("⏹ Stop App", use_container_width=True):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    st.session_state["app_process"] = None
+                    st.session_state["app_port"] = None
+                    st.rerun()
             else:
-                st.info("Validation status unknown")
+                can_launch = pathlib.Path(app_file).exists()
+                if st.button(
+                    "🚀 Launch Generated App",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=not can_launch,
+                ):
+                    if proc is not None:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=3)
+                        except Exception:
+                            pass
+                    port = _find_free_port(8503)
+                    child_env = {
+                        k: v for k, v in __import__("os").environ.items()
+                        if not k.startswith("STREAMLIT_")
+                    }
+                    new_proc = subprocess.Popen(
+                        [sys.executable, "-m", "streamlit", "run", app_file,
+                         "--server.headless", "true", "--server.port", str(port),
+                         "--server.address", "localhost"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=child_env,
+                    )
+                    time.sleep(9)
+                    if new_proc.poll() is None:
+                        st.session_state["app_process"] = new_proc
+                        st.session_state["app_port"] = port
+                        st.rerun()
+                    else:
+                        _, err = new_proc.communicate()
+                        st.error(
+                            "Generated app failed to start.\n\n"
+                            f"**Error:**\n```\n{err.strip() or '(no stderr)'}\n```"
+                        )
+
+        with col_tests2:
+            test_file_ql = final_state.get("test_file") or "outputs/test_generated_app.py"
+            can_test = pathlib.Path(test_file_ql).exists()
+            if st.button("🧪 Run Tests", use_container_width=True, disabled=not can_test):
+                with st.spinner("Running pytest..."):
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pytest", test_file_ql,
+                         "-v", "--tb=short", "--no-header"],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                out = result.stdout
+                if result.stderr.strip():
+                    out += "\n" + result.stderr
+                st.session_state["test_output"] = out
+
+            test_out = st.session_state.get("test_output")
+            if test_out:
+                low = test_out.lower()
+                if "failed" in low or "error" in low:
+                    st.error("Some tests failed")
+                else:
+                    st.success("All tests passed")
+                with st.expander("Test Output", expanded=True):
+                    st.code(test_out, language="text")
 
     # ── Tab 4: Agent Log ───────────────────────────────────────────────────
     with tab_log:
-        st.subheader("Per-Agent Execution Log")
-        agent_log = final_state.get("agent_log") or []
-        _render_agent_log_table(agent_log)
+        st.markdown(
+            '<div style="font-size:0.78rem;color:#64748B;margin-bottom:1rem">'
+            'Per-agent token usage, cost, and latency for this pipeline run.</div>',
+            unsafe_allow_html=True,
+        )
+        _render_agent_log_table(final_state.get("agent_log") or [])
 
     # ── Tab 5: Observability ──────────────────────────────────────────────
     with tab_obs:
-        st.subheader("Pipeline Summary")
+        # Summary metrics
         _render_pipeline_summary(final_state)
 
-        session_id = final_state.get("session_id", "N/A")
-        st.caption(f"Session ID: `{session_id}`")
-        st.caption(f"Pipeline status: `{final_state.get('pipeline_status', 'N/A')}`")
-
-        # ── Complexity Analysis ────────────────────────────────────────
-        complexity_score = final_state.get("complexity_score")
-        if complexity_score is not None:
-            st.markdown("---")
-            st.subheader("Complexity Analysis")
-            cx1, cx2 = st.columns([1, 3])
-            cx1.metric("Complexity Score", f"{complexity_score}/10")
-            cx2.markdown(
-                f"**Reason:** {final_state.get('complexity_reason') or 'N/A'}"
+        sid = final_state.get("session_id", "N/A")
+        _col_meta, _col_btn = st.columns([3, 1])
+        with _col_meta:
+            st.markdown(
+                f'<div style="font-size:0.75rem;color:#94A3B8;margin-top:0.6rem">'
+                f'Session <code style="background:#F1F5F9;padding:1px 6px;border-radius:4px">{sid}</code>'
+                f' &nbsp;|&nbsp; Status <code style="background:#F1F5F9;padding:1px 6px;border-radius:4px">'
+                f'{final_state.get("pipeline_status","N/A")}</code></div>',
+                unsafe_allow_html=True,
             )
-            override = final_state.get("complexity_model_override")
-            if override:
-                st.info(
-                    f"Simple prompt detected — used `{override}` for all agents "
-                    f"(score {complexity_score} ≤ threshold). Tokens saved."
-                )
-            else:
-                st.success(
-                    f"Complex prompt detected — used configured heavy model "
-                    f"(score {complexity_score} > threshold)."
+        with _col_btn:
+            if _langfuse_configured() and sid != "N/A":
+                st.link_button(
+                    "📊 View in Langfuse",
+                    url=_langfuse_session_url(sid),
+                    use_container_width=True,
                 )
 
-        st.markdown("---")
+        # Complexity
+        cx = final_state.get("complexity_score")
+        if cx is not None:
+            st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+                'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.75rem">'
+                'Complexity Analysis</div>',
+                unsafe_allow_html=True,
+            )
+            cx_color = "#10B981" if cx <= 4 else ("#F59E0B" if cx <= 7 else "#EF4444")
+            override = final_state.get("complexity_model_override")
+            st.markdown(
+                f"""
+                <div class="stat-card" style="display:inline-flex;align-items:center;gap:1.5rem;width:100%">
+                  <div>
+                    <div class="label">Complexity</div>
+                    <div class="value" style="color:{cx_color}">{cx}<span style="font-size:1rem;color:#94A3B8">/10</span></div>
+                  </div>
+                  <div style="flex:1;font-size:0.85rem;color:#475569">
+                    {final_state.get('complexity_reason') or 'N/A'}
+                    {"<br><span style='color:#6366F1;font-weight:600;font-size:0.78rem'>Light model used — tokens saved</span>" if override else ""}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Eval scores
+        eval_scores = final_state.get("eval_scores")
+        if eval_scores and "error" not in eval_scores:
+            st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+                'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.75rem">'
+                'Eval Scores</div>',
+                unsafe_allow_html=True,
+            )
+            _render_eval_scores(eval_scores)
+        elif eval_scores and "error" in eval_scores:
+            st.warning(f"Eval failed: {eval_scores['error']}")
+
+        st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
         st.info(
-            "Full traces are available in the Langfuse dashboard if "
-            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are set in .env"
+            "Full traces with token-level breakdowns are visible in your "
+            "Langfuse dashboard when LANGFUSE_PUBLIC_KEY / SECRET_KEY are set."
         )
 
     # ── Tab 6: History ────────────────────────────────────────────────────
     with tab_hist:
-        import pandas as pd
-        st.subheader("Pipeline Run History")
-        runs = load_history()
+        _render_history_tab()
 
-        if not runs:
-            st.info("No pipeline runs recorded yet. Complete a pipeline run to see history here.")
+
+def _render_history_tab():
+    import pandas as pd
+    runs = load_history()
+
+    if not runs:
+        st.info("No pipeline runs recorded yet. Complete a run to see history here.")
+        return
+
+    # Aggregate metrics
+    total_runs   = len(runs)
+    success_cnt  = sum(1 for r in runs if r.get("status") == "complete")
+    success_rate = success_cnt / total_runs * 100 if total_runs else 0
+    agg_tokens   = sum(r.get("total_tokens") or 0 for r in runs)
+    agg_cost     = sum(r.get("total_cost_usd") or 0.0 for r in runs)
+
+    hm1, hm2, hm3, hm4 = st.columns(4)
+    hm1.metric("Total Runs",   total_runs)
+    hm2.metric("Success Rate", f"{success_rate:.0f}%")
+    hm3.metric("Total Tokens", f"{agg_tokens:,}")
+    hm4.metric("Total Cost",   f"${agg_cost:.4f}")
+
+    st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
+
+    table_rows = [{
+        "ID":         r["id"],
+        "Prompt":     (r["prompt"] or "")[:60] + ("…" if len(r["prompt"] or "") > 60 else ""),
+        "Status":     "✅ complete" if r.get("status") == "complete" else "❌ failed",
+        "Tokens":     r.get("total_tokens") or 0,
+        "Cost ($)":   round(r.get("total_cost_usd") or 0.0, 5),
+        "Latency (s)":round((r.get("total_latency_ms") or 0) / 1000, 1),
+        "Created At": r.get("created_at", ""),
+    } for r in runs]
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+    st.markdown('<hr class="light-divider"/>', unsafe_allow_html=True)
+    run_labels = [
+        f"#{r['id']} — {(r['prompt'] or '')[:45]}{'…' if len(r['prompt'] or '') > 45 else ''}"
+        for r in runs
+    ]
+    sel_idx = st.selectbox(
+        "Inspect a run",
+        range(len(runs)),
+        format_func=lambda i: run_labels[i],
+        key="history_selected_run",
+    )
+    sel = runs[sel_idx]
+
+    d1, d2, d3, d4, d5, d6 = st.tabs([
+        "Prompt", "Functional Spec", "Technical Design",
+        "Code", "Test Cases", "Metrics",
+    ])
+    with d1:
+        st.text_area(
+            "Original Prompt",
+            value=sel.get("prompt") or "",
+            height=140,
+            disabled=True,
+            key=f"hist_prompt_{sel['id']}",
+        )
+        refined = sel.get("refined_prompt") or ""
+        if refined:
+            with st.expander("Refined Prompt"):
+                st.markdown(refined)
+    with d2:
+        st.markdown(sel.get("functional_spec") or "_Not available_")
+    with d3:
+        st.markdown(sel.get("technical_design") or "_Not available_")
+    with d4:
+        cv = sel.get("code") or ""
+        if cv:
+            st.code(cv, language="python", line_numbers=True)
         else:
-            # ── Aggregate metrics ──────────────────────────────────────
-            total_runs = len(runs)
-            success_count = sum(1 for r in runs if r.get("status") == "complete")
-            success_rate = (success_count / total_runs * 100) if total_runs else 0
-            agg_tokens = sum(r.get("total_tokens") or 0 for r in runs)
-            agg_cost = sum(r.get("total_cost_usd") or 0.0 for r in runs)
+            st.info("No code recorded for this run.")
+    with d5:
+        st.markdown(sel.get("test_cases") or "_Not available_")
+    with d6:
+        dm1, dm2, dm3 = st.columns(3)
+        dm1.metric("Tokens",  f"{sel.get('total_tokens') or 0:,}")
+        dm2.metric("Cost",    f"${sel.get('total_cost_usd') or 0.0:.5f}")
+        dm3.metric("Latency", f"{(sel.get('total_latency_ms') or 0)/1000:.1f}s")
+        agents_str = sel.get("agents_called") or ""
+        if agents_str:
+            st.caption(" → ".join(agents_str.split(",")))
+        vl = "Passed" if sel.get("validation_passed") else "Failed"
+        rl = "Approved" if sel.get("review_approved") else "Rejected"
+        st.caption(f"Validation: {vl}  |  Review: {rl}")
 
-            hm1, hm2, hm3, hm4 = st.columns(4)
-            hm1.metric("Total Runs", total_runs)
-            hm2.metric("Success Rate", f"{success_rate:.0f}%")
-            hm3.metric("Total Tokens Used", f"{agg_tokens:,}")
-            hm4.metric("Total Cost", f"${agg_cost:.4f}")
-
-            # ── Past runs table ────────────────────────────────────────
-            st.markdown("#### All Runs")
-            table_rows = [{
-                "ID": r["id"],
-                "Prompt": (r["prompt"] or "")[:60] + ("…" if len(r["prompt"] or "") > 60 else ""),
-                "Status": "✅ complete" if r.get("status") == "complete" else "❌ failed",
-                "Tokens": r.get("total_tokens") or 0,
-                "Cost ($)": round(r.get("total_cost_usd") or 0.0, 5),
-                "Latency (s)": round((r.get("total_latency_ms") or 0) / 1000, 1),
-                "Created At": r.get("created_at", ""),
-            } for r in runs]
-            st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
-
-            # ── Run detail viewer ──────────────────────────────────────
-            st.markdown("#### Inspect a Run")
-            run_labels = [
-                f"#{r['id']} — {(r['prompt'] or '')[:40]}{'…' if len(r['prompt'] or '') > 40 else ''}"
-                for r in runs
-            ]
-            sel_idx = st.selectbox(
-                "Select a run to inspect",
-                range(len(runs)),
-                format_func=lambda i: run_labels[i],
-                key="history_selected_run",
-            )
-            sel = runs[sel_idx]
-
-            d1, d2, d3, d4, d5, d6 = st.tabs([
-                "📋 Prompt", "📄 Functional Spec", "🏗️ Technical Design",
-                "💻 Generated Code", "🧪 Test Cases", "📊 Metrics",
-            ])
-            with d1:
-                st.text_area(
-                    "Original Prompt",
-                    value=sel.get("prompt") or "",
-                    height=150,
-                    disabled=True,
-                    key=f"hist_prompt_{sel['id']}",
-                )
-                refined = sel.get("refined_prompt") or ""
-                if refined:
-                    st.markdown("**Refined Prompt** _(PromptRefiner output)_")
-                    st.markdown(refined)
-            with d2:
-                st.markdown(sel.get("functional_spec") or "_Not available_")
-            with d3:
-                st.markdown(sel.get("technical_design") or "_Not available_")
-            with d4:
-                code_val = sel.get("code") or ""
-                if code_val:
-                    st.code(code_val, language="python", line_numbers=True)
-                else:
-                    st.info("No code recorded for this run.")
-            with d5:
-                st.markdown(sel.get("test_cases") or "_Not available_")
-            with d6:
-                dm1, dm2, dm3 = st.columns(3)
-                dm1.metric("Tokens", f"{sel.get('total_tokens') or 0:,}")
-                dm2.metric("Cost", f"${sel.get('total_cost_usd') or 0.0:.5f}")
-                dm3.metric("Latency", f"{(sel.get('total_latency_ms') or 0) / 1000:.1f}s")
-                agents_str = sel.get("agents_called") or ""
-                if agents_str:
-                    st.caption("Agents: " + " → ".join(agents_str.split(",")))
-                val_lbl = "Passed" if sel.get("validation_passed") else "Failed"
-                rev_lbl = "Approved" if sel.get("review_approved") else "Rejected"
-                st.caption(f"Validation: {val_lbl}  |  Review: {rev_lbl}")
-
-            # ── Action buttons ─────────────────────────────────────────
-            st.markdown("")
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                if st.button(
-                    "🔁 Re-run this prompt",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"rerun_{sel['id']}",
-                ):
-                    st.session_state["rerun_prompt"] = sel.get("prompt") or ""
-                    st.rerun()
-            with ac2:
-                code_dl = sel.get("code") or ""
-                st.download_button(
-                    "⬇️ Download Code",
-                    data=code_dl or " ",
-                    file_name="generated_app.py",
-                    mime="text/x-python",
-                    disabled=not code_dl,
-                    use_container_width=True,
-                    key=f"hist_dl_{sel['id']}",
-                )
-
-    # ── Quick Launch ──────────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Quick Launch")
-    col_app, col_tests = st.columns(2)
-
-    # ── Left column: Generated App ────────────────────────────────────────
-    with col_app:
-        app_file = "outputs/generated_app.py"
-        proc = st.session_state.get("app_process")
-        app_running = proc is not None and proc.poll() is None
-
-        if app_running:
-            port = st.session_state["app_port"]
-            st.link_button(
-                "Open Generated App",
-                f"http://localhost:{port}",
-                use_container_width=True,
-                type="primary",
-            )
-            if st.button("Stop App", use_container_width=True):
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                st.session_state["app_process"] = None
-                st.session_state["app_port"] = None
-                st.rerun()
-        else:
-            can_launch = pathlib.Path(app_file).exists()
-            if st.button(
-                "Launch Generated App",
-                use_container_width=True,
-                type="primary",
-                disabled=not can_launch,
-            ):
-                # Clean up any stale process
-                if proc is not None:
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=3)
-                    except Exception:
-                        pass
-                port = _find_free_port(8503)
-                # Strip Streamlit-internal env vars so the child process
-                # doesn't inherit port/server settings from the parent app.
-                child_env = {
-                    k: v for k, v in __import__("os").environ.items()
-                    if not k.startswith("STREAMLIT_")
-                }
-                new_proc = subprocess.Popen(
-                    [sys.executable, "-m", "streamlit", "run", app_file,
-                     "--server.headless", "true", "--server.port", str(port),
-                     "--server.address", "localhost"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=child_env,
-                )
-                time.sleep(9)  # Streamlit cold-start with plotly can take 7-8s
-                if new_proc.poll() is None:
-                    st.session_state["app_process"] = new_proc
-                    st.session_state["app_port"] = port
-                    st.rerun()
-                else:
-                    _, err = new_proc.communicate()
-                    st.error(
-                        "Generated app failed to start.\n\n"
-                        f"**Error:**\n```\n{err.strip() or '(no stderr output)'}\n```"
-                    )
-
-    # ── Right column: Tests ───────────────────────────────────────────────
-    with col_tests:
-        test_file = final_state.get("test_file") or "outputs/test_generated_app.py"
-        can_test = pathlib.Path(test_file).exists()
-
-        if st.button("Run Tests", use_container_width=True, disabled=not can_test):
-            with st.spinner("Running pytest..."):
-                result = subprocess.run(
-                    [sys.executable, "-m", "pytest", test_file,
-                     "-v", "--tb=short", "--no-header"],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-            output = result.stdout
-            if result.stderr.strip():
-                output += "\n" + result.stderr
-            st.session_state["test_output"] = output
-
-        test_out = st.session_state.get("test_output")
-        if test_out:
-            low = test_out.lower()
-            if "failed" in low or "error" in low:
-                st.error("Some tests failed")
-            else:
-                st.success("All tests passed")
-            with st.expander("Test Output", expanded=True):
-                st.code(test_out, language="text")
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        if st.button(
+            "🔁 Re-run this prompt",
+            type="primary",
+            use_container_width=True,
+            key=f"rerun_{sel['id']}",
+        ):
+            st.session_state["rerun_prompt"] = sel.get("prompt") or ""
+            st.rerun()
+    with ac2:
+        code_dl = sel.get("code") or ""
+        st.download_button(
+            "⬇️ Download Code",
+            data=code_dl or " ",
+            file_name="generated_app.py",
+            mime="text/x-python",
+            disabled=not code_dl,
+            use_container_width=True,
+            key=f"hist_dl_{sel['id']}",
+        )
 
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 
 _render_sidebar()
 
-st.title("🤖 BMAD AI Orchestration Pipeline")
-st.caption("PromptRefiner → ComplexityScorer → Planner → Architect → Developer → Validator → Tester → Reviewer → Executor → TestWriter")
-st.markdown("---")
+# ── Hero header ───────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hero-title">BMAD AI Pipeline</div>
+    <div class="hero-sub">
+      Describe any app in plain English — the pipeline writes, tests, and runs it for you.
+    </div>
+    <div class="pipeline-steps">
+      <span class="step-pill">PromptRefiner</span><span class="step-arrow">›</span>
+      <span class="step-pill">Planner</span><span class="step-arrow">›</span>
+      <span class="step-pill">Architect</span><span class="step-arrow">›</span>
+      <span class="step-pill">Developer</span><span class="step-arrow">›</span>
+      <span class="step-pill">Validator ⟳</span><span class="step-arrow">›</span>
+      <span class="step-pill">Reviewer ⟳</span><span class="step-arrow">›</span>
+      <span class="step-pill">Executor</span><span class="step-arrow">›</span>
+      <span class="step-pill">TestWriter</span><span class="step-arrow">›</span>
+      <span class="step-pill">EvalAgent</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ── Input section ─────────────────────────────────────────────────────────────
-# If the History tab requested a re-run, pre-fill the text area widget
 if st.session_state.get("rerun_prompt"):
     st.session_state["user_request_input"] = st.session_state.pop("rerun_prompt")
+elif st.session_state.get("template_prompt"):
+    st.session_state["user_request_input"] = st.session_state.pop("template_prompt")
 
-col_input, col_actions = st.columns([3, 1])
+col_input, col_actions = st.columns([4, 1])
 
 with col_input:
     user_request = st.text_area(
-        label="Describe the application to build:",
+        label="What would you like to build?",
         placeholder=(
-            "e.g. Build a task management app with add/delete/list tasks. "
-            "Each task has a title and due date."
+            "e.g. Build a task management app with add / delete / list tasks. "
+            "Each task has a title, priority, and due date."
         ),
-        height=120,
+        height=110,
         disabled=st.session_state["running"],
         key="user_request_input",
     )
 
 with col_actions:
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="margin-top:1.85rem"></div>',
+        unsafe_allow_html=True,
+    )
     run_clicked = st.button(
-        "🚀 Run Pipeline",
+        "⚡ Run Pipeline",
         type="primary",
         disabled=st.session_state["running"] or not (user_request or "").strip(),
         use_container_width=True,
     )
     reset_clicked = st.button(
-        "🔄 Reset",
+        "↺ Reset",
         disabled=st.session_state["running"],
         use_container_width=True,
     )
 
 # ── Reset ─────────────────────────────────────────────────────────────────────
 if reset_clicked:
-    # Kill the launched generated app if still running
     proc = st.session_state.get("app_process")
     if proc is not None and proc.poll() is None:
         proc.terminate()
@@ -803,37 +1382,31 @@ if reset_clicked:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+    for k in ["running", "final_state", "error", "start_time",
+              "app_process", "app_port", "test_output", "rerun_prompt"]:
+        st.session_state[k] = None if k not in ("running",) else False
     st.session_state["running"] = False
-    st.session_state["final_state"] = None
-    st.session_state["error"] = None
-    st.session_state["start_time"] = None
     st.session_state["result_queue"] = queue.Queue(maxsize=1)
-    st.session_state["app_process"] = None
-    st.session_state["app_port"] = None
-    st.session_state["test_output"] = None
-    st.session_state["rerun_prompt"] = None
     st.rerun()
 
 # ── Launch pipeline ───────────────────────────────────────────────────────────
 if run_clicked and (user_request or "").strip():
-    # ── Guardrail check — before spending any tokens ───────────────────────
     from core.guardrails import check_prompt, format_rejection
     _safe, _reason = check_prompt(user_request.strip())
     if not _safe:
         st.error(format_rejection(_reason))
         st.stop()
 
-    # Drain any leftover result from a previous run
     while not st.session_state["result_queue"].empty():
         try:
             st.session_state["result_queue"].get_nowait()
         except queue.Empty:
             break
 
-    st.session_state["running"] = True
+    st.session_state["running"]     = True
     st.session_state["final_state"] = None
-    st.session_state["error"] = None
-    st.session_state["start_time"] = time.time()
+    st.session_state["error"]       = None
+    st.session_state["start_time"]  = time.time()
 
     worker = threading.Thread(
         target=_run_pipeline_worker,
@@ -848,27 +1421,72 @@ if st.session_state["running"]:
     try:
         result = st.session_state["result_queue"].get_nowait()
         final_state, error = result
-        st.session_state["running"] = False
+        st.session_state["running"]     = False
         st.session_state["final_state"] = final_state
-        st.session_state["error"] = error
+        st.session_state["error"]       = error
         if final_state:
             final_state["pipeline_status"] = "complete"
         st.rerun()
     except queue.Empty:
-        # Still running — show spinner and schedule a rerun
         elapsed = time.time() - (st.session_state["start_time"] or time.time())
-        with st.spinner(f"⏳ Pipeline running... ({elapsed:.0f}s elapsed)"):
-            time.sleep(2)
+        st.markdown(
+            f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px;
+                        padding:1.2rem 1.6rem;margin-top:1rem;
+                        box-shadow:0 1px 4px rgba(15,23,42,0.05);
+                        display:flex;align-items:center;gap:1rem">
+              <span class="pulse-dot"></span>
+              <div>
+                <div style="font-weight:700;color:#0F172A;font-size:0.95rem">Pipeline running…</div>
+                <div style="font-size:0.78rem;color:#64748B;margin-top:2px">
+                  {elapsed:.0f}s elapsed &nbsp;·&nbsp;
+                  Agents are writing, testing, and reviewing your app
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        time.sleep(2)
         st.rerun()
 
-# ── Display results ───────────────────────────────────────────────────────────
+# ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state["error"]:
-    st.error(f"❌ Pipeline failed:\n\n{st.session_state['error']}")
+    st.error(f"Pipeline failed: {st.session_state['error']}")
 
 if st.session_state["final_state"]:
     elapsed_total = time.time() - (st.session_state.get("start_time") or time.time())
-    st.success(f"✅ Pipeline complete in {elapsed_total:.1f}s")
-    st.markdown("---")
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#ECFDF5,#D1FAE5);
+                    border:1px solid #6EE7B7;border-radius:14px;
+                    padding:0.85rem 1.4rem;margin:1rem 0;
+                    display:flex;align-items:center;gap:0.75rem">
+          <span style="font-size:1.3rem">✅</span>
+          <div>
+            <div style="font-weight:700;color:#065F46">Pipeline complete</div>
+            <div style="font-size:0.78rem;color:#047857">Finished in {elapsed_total:.1f}s</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     _render_results(st.session_state["final_state"])
+
 elif not st.session_state["running"] and not st.session_state["error"]:
-    st.info("Enter a request above and click **Run Pipeline** to start.")
+    st.markdown(
+        """
+        <div style="background:#FFFFFF;border:1px dashed #CBD5E1;border-radius:16px;
+                    padding:3rem 2rem;text-align:center;margin-top:1.5rem">
+          <div style="font-size:2.5rem;margin-bottom:0.75rem">⚡</div>
+          <div style="font-size:1.05rem;font-weight:700;color:#0F172A;margin-bottom:0.4rem">
+            Ready to build
+          </div>
+          <div style="font-size:0.85rem;color:#64748B;max-width:420px;margin:0 auto">
+            Enter a description above and click <strong>Run Pipeline</strong>.
+            The AI will plan, architect, code, test, and execute your app automatically.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

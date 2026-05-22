@@ -174,18 +174,18 @@ def create_session(
         return session_id, None
 
     try:
-        # Try the standard import path first; fall back to the older alias.
+        # Langfuse v3: import path is langfuse.langchain (v2 alias removed)
         try:
-            from langfuse.callback import CallbackHandler  # type: ignore[import]
-        except ImportError:
             from langfuse.langchain import CallbackHandler  # type: ignore[import]
+        except ImportError:
+            from langfuse.callback import CallbackHandler  # type: ignore[import]  # v2 fallback
 
-        handler = CallbackHandler(
-            session_id=session_id,
-            trace_name=run_name,
-        )
+        # Langfuse v3 removed session_id / trace_name constructor params.
+        # Session ID is now injected via the invoke() metadata dict instead
+        # (see main.py / streamlit_app.py: metadata={"langfuse_session_id": …})
+        handler = CallbackHandler()
         _langfuse_handler = handler
-        print(f"[Langfuse] CallbackHandler ready (session {session_id[:8]}…)")
+        print(f"[Langfuse] CallbackHandler ready (session {session_id[:8]}...)")
         return session_id, handler
 
     except Exception as exc:
@@ -287,35 +287,21 @@ def flush(handler: Optional[Any] = None) -> None:
     """
     Flush all pending Langfuse events to the cloud.
 
-    Must be called in a finally block after every pipeline run so traces
-    appear in the Langfuse dashboard immediately.
-
-    Parameters
-    ----------
-    handler : CallbackHandler | None
-        Explicit handler to flush.  Falls back to the module-level
-        _langfuse_handler if not provided (covers the Streamlit UI path
-        where the handler is not passed to the call site).
+    Uses Langfuse() directly — the same pattern as the working reference
+    project — instead of going through the CallbackHandler, which has no
+    flush() method in Langfuse v3.
 
     Safe to call even when Langfuse is unconfigured.
     """
     global _langfuse_handler
 
-    h = handler or _langfuse_handler
-    if h is None:
-        return
-
     print("[Langfuse] Flushing...")
     try:
-        h.flush()
+        from langfuse import Langfuse  # type: ignore[import]
+        lf = Langfuse()
+        lf.flush()
         print("[Langfuse] Flush complete")
-    except Exception as exc:  # noqa: BLE001
-        warnings.warn(
-            f"[Langfuse] Flush warning: {exc}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    except Exception as exc:
+        print(f"[Langfuse] Flush warning: {exc}")
     finally:
-        # Reset so the next pipeline run starts with a fresh handler and
-        # exporter thread — avoids the drained-processor silent-drop bug.
         _langfuse_handler = None

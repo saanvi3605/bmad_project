@@ -283,4 +283,11 @@ def build_initial_state(
         "complexity_score": None,
         "complexity_reason": None,
         "complexity_model_override": None,
+        # Self-healing Executor fields
+        "runtime_error": None,
+        "runtime_fix_attempts": 0,
+        # ReadmeWriter fields
+        "readme_file": None,
+        # EvalAgent fields
+        "eval_scores": None,
     }
