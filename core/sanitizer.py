@@ -332,6 +332,45 @@ def _apply_formatters(code: str) -> str:
     return code
 
 
+def sanitize_rag_files(files: dict[str, str]) -> dict[str, str]:
+    """
+    Sanitize a dict of {filename: content} from the RAG developer agent.
+
+    For RAG mode we do NOT strip FastAPI/ChromaDB/LangChain imports — those
+    are required.  We only strip markdown fences, fix common LLM import
+    hallucinations, normalise whitespace, and run black/isort on Python files.
+    """
+    sanitized: dict[str, str] = {}
+    for filename, content in files.items():
+        # Strip markdown fences
+        content = content.replace("```python", "").replace("```yaml", "").replace("```", "").strip()
+
+        if filename.endswith(".py"):
+            content = _fix_rag_imports(content)
+            content = _apply_formatters(content)
+
+        sanitized[filename] = content
+    return sanitized
+
+
+def _fix_rag_imports(code: str) -> str:
+    """
+    Fix common LLM import hallucinations in RAG-mode Python files.
+
+    The package is `python-dotenv` but the import name is `dotenv`.
+    LLMs frequently hallucinate `import python_dotenv` which doesn't exist.
+    """
+    # `import python_dotenv` → `from dotenv import load_dotenv`
+    code = re.sub(r'import python_dotenv\b', 'from dotenv import load_dotenv', code)
+    # `python_dotenv.load_dotenv()` → `load_dotenv()`
+    code = re.sub(r'python_dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
+    # `import dotenv` (bare) → `from dotenv import load_dotenv`
+    code = re.sub(r'^import dotenv\s*$', 'from dotenv import load_dotenv', code, flags=re.MULTILINE)
+    # `dotenv.load_dotenv()` → `load_dotenv()`
+    code = re.sub(r'dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
+    return code
+
+
 def _fix_integer_number_inputs(code: str) -> str:
     """Replace format="%.2f" with format="%d" and float step with step=1
     on st.number_input calls whose value= argument is an integer literal."""

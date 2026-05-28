@@ -17,19 +17,12 @@ from core.llm_factory import get_config
 _AGENT_NAME = "reviewer"
 
 
-def reviewer_agent(state: dict[str, Any]) -> dict[str, Any]:
-    if not get_config().get("reviewer", {}).get("enabled", True):
-        print("\n  [Reviewer] Disabled in config — auto-approving.")
-        state["review_approved"] = True
-        state["review_feedback"] = "Reviewer disabled."
-        state["review_attempts"] = state.get("review_attempts", 0) + 1
-        return state
-
-    prompt = f"""You are a strict senior code reviewer for Streamlit applications.
+_STREAMLIT_REVIEW_PROMPT = """\
+You are a strict senior code reviewer for Streamlit applications.
 Review the generated code below and produce a review report using EXACTLY this template.
 
 Generated Code:
-{state['code']}
+{code}
 
 OUTPUT TEMPLATE (reproduce every heading exactly):
 
@@ -63,6 +56,59 @@ RULES:
 - The first line of your response after the template MUST be "APPROVED: YES" or "APPROVED: NO"
 - Be specific: cite line numbers or function names, not vague descriptions
 """
+
+_RAG_REVIEW_PROMPT = """\
+You are a strict senior code reviewer for FastAPI RAG services.
+Review the generated code below and produce a review report using EXACTLY this template.
+
+Generated Code:
+{code}
+
+OUTPUT TEMPLATE (reproduce every heading exactly):
+
+## Code Review Report
+
+### 1. Review Summary
+APPROVED: YES or NO
+[One sentence overall verdict]
+
+### 2. Criteria Checklist
+| # | Criterion | Status | Notes |
+|---|-----------|--------|-------|
+| 1 | SYNTAX: Valid executable Python, no SyntaxErrors | PASS/FAIL | |
+| 2 | FRAMEWORK: FastAPI + uvicorn — no Streamlit, no Flask | PASS/FAIL | |
+| 3 | VECTOR DB: ChromaDB used for embeddings storage | PASS/FAIL | |
+| 4 | ENDPOINTS: /health, /ingest, /query, /metrics all present | PASS/FAIL | |
+| 5 | PYDANTIC: QueryRequest, QueryResponse, Citation, IngestResponse models defined | PASS/FAIL | |
+| 6 | CORS: CORSMiddleware with allow_origins=["*"] configured | PASS/FAIL | |
+| 7 | TRACING: Langfuse trace created per /query call with child spans | PASS/FAIL | |
+| 8 | IMPORTS: Uses `from dotenv import load_dotenv` (NOT `import python_dotenv`) | PASS/FAIL | |
+| 9 | COMPLETENESS: No stub functions, no TODOs, no placeholder comments | PASS/FAIL | |
+
+### 3. Issues Found
+[If APPROVED: YES — write "None". If NO — list each issue:]
+- Criterion <N> FAIL: <specific line number or location> — <exact fix required>
+
+### 4. Recommended Fixes
+[If APPROVED: YES — write "None". If NO — bullet list of exact code changes needed]
+
+RULES:
+- The first line of your response after the template MUST be "APPROVED: YES" or "APPROVED: NO"
+- Be specific: cite line numbers or function names, not vague descriptions
+"""
+
+
+def reviewer_agent(state: dict[str, Any]) -> dict[str, Any]:
+    if not get_config().get("reviewer", {}).get("enabled", True):
+        print("\n  [Reviewer] Disabled in config — auto-approving.")
+        state["review_approved"] = True
+        state["review_feedback"] = "Reviewer disabled."
+        state["review_attempts"] = state.get("review_attempts", 0) + 1
+        return state
+
+    project_mode = state.get("project_mode", "streamlit_crud")
+    template = _RAG_REVIEW_PROMPT if project_mode == "fastapi_rag" else _STREAMLIT_REVIEW_PROMPT
+    prompt = template.format(code=state["code"])
 
     state["review_attempts"] = state.get("review_attempts", 0) + 1
     content = run_agent(
