@@ -2,39 +2,42 @@
 core/agent_runner.py
 ────────────────────────────────────────────────────────────────────────────────
 The single shared LLM invocation layer for every LLM-calling agent in the
-BMAD pipeline.
+BMAD pipeline.  Uses LiteLLM for provider-agnostic LLM calls with native
+Langfuse observability.
 
 Responsibilities
-  1. Hold the single ChatGroq instance via a LAZY getter (_get_llm).
-     The LLM is NOT instantiated at import time — only on the first call.
-     This ensures tests that monkeypatch build_llm or set ar.llm = MagicMock()
-     can do so before any LLM creation, even without GROQ_API_KEY set.
-  2. Accept a filled prompt string + BMADState, invoke the LLM, and return
-     the response content string.
-  3. Extract token counts from the LangChain response and delegate to
+  1. Hold a lazy singleton LiteLLM config dict (_llm) — built on first call.
+     NOT instantiated at import time so tests can inject mocks freely.
+  2. Accept a filled prompt string + BMADState, call litellm.completion(),
+     and return the response content string.
+  3. Extract token counts from the LiteLLM response and delegate to
      observability.log_agent_call() for local bookkeeping.
-  4. Attach the Langfuse CallbackHandler stored in state["langfuse_handler"]
-     so every call is automatically traced without each agent knowing about
-     Langfuse at all.
-  5. Expose a thin helper extract_tokens() so the exact extraction logic
-     is tested in one place.
+  4. Pass Langfuse trace context (trace_id, session_id, generation_name)
+     as LiteLLM metadata so every call is automatically observed without
+     each agent knowing about Langfuse at all.
+  5. Expose _call_litellm() as a thin wrapper that tests can monkeypatch.
 
 Test monkeypatching
-  Tests can replace the module-level _llm variable OR monkeypatch build_llm:
-
-      import core.agent_runner as ar
-      ar._llm = MagicMock(...)
-
-  Or pre-empt build_llm before import:
+  Patch the LiteLLM call wrapper:
 
       from unittest.mock import patch, MagicMock
-      with patch("core.llm_factory.build_llm", return_value=MagicMock()):
-          import core.agent_runner
+      mock_resp = MagicMock()
+      mock_resp.choices[0].message.content = "mocked"
+      mock_resp.usage.prompt_tokens = 10
+      mock_resp.usage.completion_tokens = 20
+      with patch("core.agent_runner._call_litellm", return_value=mock_resp):
+          ...
+
+  Or keep the old _llm singleton approach for lazy-init tests:
+
+      import core.agent_runner as ar
+      ar._llm = {"model": "groq/mock", "temperature": 0, "max_tokens": 1, "timeout": 1}
 ────────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
 
+import re
 import time
 import warnings
 from typing import Any, Optional
@@ -44,7 +47,7 @@ from core.llm_factory import (
     get_llm_config, get_llm_light_config,
     clear_config_cache,
 )
-from core.observability import log_agent_call
+from core.observability import log_agent_call, log_langfuse_generation
 
 # ---------------------------------------------------------------------------
 # Lazy singletons — built on first call, NOT at import time.
@@ -118,26 +121,116 @@ def reset_llm_singletons() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Token extraction helper
+# LiteLLM call wrapper  (monkeypatch this in tests)
 # ---------------------------------------------------------------------------
+
+
+_RATE_LIMIT_MAX_RETRIES = 5
+_RATE_LIMIT_FALLBACK_WAIT = 10.0  # seconds to wait when Groq doesn't tell us how long
+
+
+def _parse_retry_after(error_message: str) -> float:
+    """
+    Extract the suggested wait time from a Groq rate-limit error message.
+
+    Groq returns:  "Please try again in 4.189999999s."
+    Falls back to _RATE_LIMIT_FALLBACK_WAIT if the pattern isn't found.
+    """
+    m = re.search(r'try again in ([\d.]+)s', error_message, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) + 2.0   # add 2s buffer
+    return _RATE_LIMIT_FALLBACK_WAIT
+
+
+def _call_litellm(
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    timeout: int,
+    metadata: Optional[dict[str, Any]],
+) -> Any:
+    """
+    Thin wrapper around litellm.completion — the only place LiteLLM is called.
+
+    Includes automatic retry-with-backoff for RateLimitError.  Groq's free
+    tier has a 6 000 TPM limit; multiple light-model agents in the same
+    pipeline run can exceed it within the same minute window.  Rather than
+    crashing the whole pipeline we wait the time Groq itself suggests and
+    retry, up to _RATE_LIMIT_MAX_RETRIES times.
+
+    Keeping it as a named function lets tests patch just this one symbol:
+
+        with patch("core.agent_runner._call_litellm", return_value=mock_resp):
+            ...
+    """
+    import litellm  # lazy import so missing litellm doesn't break imports
+
+    kwargs: dict[str, Any] = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    if metadata:
+        kwargs["metadata"] = metadata
+
+    for attempt in range(1, _RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            return litellm.completion(**kwargs)
+        except litellm.RateLimitError as exc:
+            if attempt == _RATE_LIMIT_MAX_RETRIES:
+                raise   # exhausted all retries — propagate
+            wait = _parse_retry_after(str(exc))
+            print(
+                f"\n  [LLM] Rate limit hit on {model} "
+                f"(attempt {attempt}/{_RATE_LIMIT_MAX_RETRIES - 1}). "
+                f"Waiting {wait:.1f}s before retry..."
+            )
+            time.sleep(wait)
+
+
+# ---------------------------------------------------------------------------
+# Token extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_litellm_tokens(response: Any) -> tuple[int, int]:
+    """
+    Extract (input_tokens, output_tokens) from a LiteLLM ModelResponse.
+
+    LiteLLM always returns an OpenAI-compatible response object:
+        response.usage.prompt_tokens
+        response.usage.completion_tokens
+    """
+    try:
+        usage = response.usage
+        inp = getattr(usage, "prompt_tokens", 0) or 0
+        out = getattr(usage, "completion_tokens", 0) or 0
+        return int(inp), int(out)
+    except Exception:
+        warnings.warn(
+            "Could not extract token counts from LiteLLM response. "
+            "Cost and token logging for this call will show 0.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return 0, 0
 
 
 def extract_tokens(response: Any) -> tuple[int, int]:
     """
     Extract (input_tokens, output_tokens) from a LangChain AIMessage.
 
-    LangChain / langchain-groq stores usage data in one of two places
-    depending on the langchain-core version:
+    Kept for backwards compatibility with existing tests.  New code should
+    use _extract_litellm_tokens() instead.
 
+    LangChain stores usage data in one of two places:
       response.usage_metadata           (langchain-core >= 0.2)
-        {"input_tokens": N, "output_tokens": M, "total_tokens": N+M}
-
       response.response_metadata["token_usage"]  (older versions / fallback)
-        {"prompt_tokens": N, "completion_tokens": M, "total_tokens": N+M}
 
-    Returns (0, 0) if neither location is found — never raises.  A warning
-    is emitted so missing usage data is visible in logs without crashing the
-    pipeline.
+    Returns (0, 0) if neither location is found — never raises.
     """
     # Attempt 1: usage_metadata (preferred, langchain-core >= 0.2)
     usage_meta = getattr(response, "usage_metadata", None)
@@ -181,7 +274,7 @@ def run_agent(
     """
     Invoke the shared LLM with ``prompt`` and return the response content.
 
-    This is the ONLY function that calls ``llm.invoke()``.  Every LLM-calling
+    This is the ONLY function that calls the LLM.  Every LLM-calling
     agent_impl calls this function instead of holding its own LLM instance.
 
     Parameters
@@ -189,43 +282,59 @@ def run_agent(
     prompt       Fully rendered prompt string ready for the LLM.
     agent_name   Human-readable agent identifier for logging, e.g. "developer".
     prompt_key   Registry key of the prompt variant, e.g. "developer_clean_v1".
-    state        BMADState dict.  Must already contain "langfuse_handler" if
-                 Langfuse tracing is desired.
+    state        BMADState dict.  Must already contain "langfuse_handler" (the
+                 Langfuse context dict) if tracing is desired.
+    light        If True, use the light model (llm_light: section).
 
     Returns
     -------
-    str  The LLM's response as a plain string (response.content).
+    str  The LLM's response as a plain string.
 
     Raises
     ------
     Re-raises any exception from the LLM call unchanged.
     """
-    # If ComplexityScorer set an override and this is a heavy-model call, use it.
+    # Resolve which config to use
     override_model = state.get("complexity_model_override") if not light else None
     if override_model:
-        llm_instance = _get_llm_for_override(override_model)
+        llm_cfg = _get_llm_for_override(override_model)
         model_name = override_model
     else:
-        llm_instance = _get_llm(light=light)
+        llm_cfg = _get_llm(light=light)
         model_name = (get_llm_light_config() if light else get_llm_config())["model"]
 
-    # Build the Langfuse callback list from state so Langfuse auto-instruments
-    # this LLM call and nests it under the current LangGraph node span.
-    lf_handler = state.get("langfuse_handler")
-    callbacks = (
-        [lf_handler]
-        if lf_handler is not None and hasattr(lf_handler, "on_llm_start")
-        else []
-    )
+    # state["langfuse_handler"] is a dict from observability.create_session():
+    #   {"trace_id": "...", "session_id": "...", "trace_name": "..."}
+    lf_ctx = state.get("langfuse_handler") if isinstance(state.get("langfuse_handler"), dict) else None
+
+    messages = [{"role": "user", "content": prompt}]
 
     t_start = time.perf_counter()
-    if callbacks:
-        response = llm_instance.invoke(prompt, config={"callbacks": callbacks})
-    else:
-        response = llm_instance.invoke(prompt)
+    response = _call_litellm(
+        model=llm_cfg["model"],
+        messages=messages,
+        temperature=llm_cfg["temperature"],
+        max_tokens=llm_cfg["max_tokens"],
+        timeout=llm_cfg.get("timeout", 120),
+        metadata=None,  # Langfuse is logged directly via log_langfuse_generation()
+    )
     latency_ms = (time.perf_counter() - t_start) * 1000.0
 
-    input_tokens, output_tokens = extract_tokens(response)
+    input_tokens, output_tokens = _extract_litellm_tokens(response)
+    content = response.choices[0].message.content
+
+    # Log to Langfuse directly using the 4.x SDK — bypasses LiteLLM's
+    # broken built-in Langfuse callback and guarantees real token counts.
+    log_langfuse_generation(
+        lf_ctx=lf_ctx,
+        agent_name=agent_name,
+        model=llm_cfg["model"],
+        messages=messages,
+        output=content,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+    )
 
     log_agent_call(
         state=state,
@@ -237,7 +346,7 @@ def run_agent(
         model=model_name,
     )
 
-    return response.content
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +358,7 @@ def build_initial_state(
     user_request: str,
     session_id: str,
     langfuse_handler: Optional[Any],
+    project_mode: str = "streamlit_crud",
 ) -> dict[str, Any]:
     """
     Construct the initial BMADState dict for a new pipeline run.
@@ -290,4 +400,7 @@ def build_initial_state(
         "readme_file": None,
         # EvalAgent fields
         "eval_scores": None,
+        # Project mode
+        "project_mode": project_mode,
+        "extra_files": None,
     }
