@@ -209,6 +209,11 @@ def sanitize_code(code: str) -> str:
     result = re.sub(r"\{%.*?%\}", "", result)
     result = re.sub(r"\{\{.*?\}\}", "", result)
 
+    # Replace deprecated Streamlit experimental APIs (removed in Streamlit 1.30+)
+    result = result.replace("st.experimental_rerun()", "st.rerun()")
+    result = result.replace("st.experimental_get_query_params()", "st.query_params")
+    result = result.replace("st.experimental_set_query_params(", "st.query_params.update(")
+
     # Fix SQLite table names that contain spaces — replaces spaces with
     # underscores in every SQL keyword context (FROM, INTO, UPDATE, JOIN…).
     # Python display strings like st.header("Menu Items") are untouched.
