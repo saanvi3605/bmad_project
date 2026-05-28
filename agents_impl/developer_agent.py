@@ -222,6 +222,14 @@ COMMON MISTAKES — every item below has broken generated RAG services before. D
 - NEVER use: from langchain.embeddings.anthropic import AnthropicEmbeddings
 - NEVER use: from langchain.llms.anthropic import Anthropic
 - NEVER use: from langchain.chat_models import ChatAnthropic
+- NEVER use: from langchain.text_splitter import RecursiveCharacterTextSplitter
+  That module no longer exists. Use an inline splitter instead:
+    def _split_text(text: str, chunk_size: int = 512, chunk_overlap: int = 50) -> list[str]:
+        chunks, start = [], 0
+        while start < len(text):
+            chunks.append(text[start: start + chunk_size])
+            start += chunk_size - chunk_overlap
+        return chunks or [text]
 - These old paths no longer exist. Use the Anthropic SDK directly instead:
     from anthropic import Anthropic
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))

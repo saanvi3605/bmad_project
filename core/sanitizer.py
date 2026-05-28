@@ -382,6 +382,23 @@ def _fix_rag_imports(code: str) -> str:
     code = re.sub(r'^import dotenv\s*$', 'from dotenv import load_dotenv', code, flags=re.MULTILINE)
     code = re.sub(r'dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
 
+    # ── Old LangChain text_splitter path (moved to langchain_text_splitters) ──
+    # Replace the import with a comment; call sites are replaced below.
+    code = re.sub(
+        r'from langchain\.text_splitter import\s+\w+[^\n]*',
+        '# langchain.text_splitter removed — use inline splitter',
+        code,
+    )
+    # Replace RecursiveCharacterTextSplitter instantiation + split_text call
+    code = re.sub(
+        r'splitter\s*=\s*RecursiveCharacterTextSplitter\([^)]*\)\s*\n\s*chunks\s*=\s*splitter\.split_text\(\w+\)',
+        (
+            'chunks = [text[i:i+512] for i in range(0, max(len(text)-1, 1), 462)]'
+            ' or [text]  # inline splitter'
+        ),
+        code,
+    )
+
     # ── Old LangChain embedding import paths (removed in LangChain 0.2+) ──────
     # Replace the entire import line with the correct Anthropic SDK import.
     # We inject `from anthropic import Anthropic as _AnthropicClient` so call
