@@ -156,22 +156,149 @@ def validate_code(code: str) -> tuple[bool, str]:
                 f"Use underscores instead: '{suggested}'."
             )
 
+    # --- Check 12: st.form_submit_button must be at the top level of with st.form() ---
+    # If it is nested inside an `if` block within the form, Streamlit warns
+    # "This form has no submit button" whenever that condition is False.
+    def _has_submit_call(node: ast.AST) -> bool:
+        for n in ast.walk(node):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "form_submit_button"
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "st"
+            ):
+                return True
+        return False
+
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            is_form_ctx = any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Attribute)
+                and item.context_expr.func.attr == "form"
+                and isinstance(item.context_expr.func.value, ast.Name)
+                and item.context_expr.func.value.id == "st"
+                for item in node.items
+            )
+            if not is_form_ctx:
+                continue
+            # Walk the direct children of the with-block
+            top_level_submit = any(
+                not isinstance(stmt, ast.If) and _has_submit_call(stmt)
+                for stmt in node.body
+            )
+            if_nested_submit = any(
+                isinstance(stmt, ast.If) and _has_submit_call(stmt)
+                for stmt in node.body
+            )
+            if if_nested_submit and not top_level_submit:
+                return False, (
+                    "st.form_submit_button() is only reachable inside an 'if' block within "
+                    "st.form(). When that condition is False, Streamlit shows 'This form has "
+                    "no submit button'. Fix: call st.form_submit_button() unconditionally at "
+                    "the top level of the with st.form(): block, then check the returned bool "
+                    "outside the form."
+                )
+    except Exception:
+        pass  # AST errors already caught in Check 1
+
     return True, "All checks passed."
+
+
+def validate_rag_code(code: str) -> tuple[bool, str]:
+    """
+    Validation checks for FastAPI RAG mode (main.py only).
+
+    Replaces the Streamlit-specific checks with RAG-specific equivalents.
+    """
+    # Check 1: AST syntax
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        return False, f"SyntaxError on line {e.lineno}: {e.msg}\n  >> {e.text}"
+
+    # Check 2: py_compile
+    tmp = tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8")
+    try:
+        tmp.write(code)
+        tmp.close()
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", tmp.name],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip().replace(tmp.name, "main.py")
+            return False, f"Compile error:\n{error}"
+    except subprocess.TimeoutExpired:
+        return False, "Compile check timed out."
+    finally:
+        os.unlink(tmp.name)
+
+    # Check 3: FastAPI app present
+    if "from fastapi import" not in code and "import fastapi" not in code:
+        return False, "Missing FastAPI import — RAG service must use FastAPI."
+    if "FastAPI()" not in code and "FastAPI(" not in code:
+        return False, "Missing FastAPI() app instantiation."
+
+    # Check 4: Required endpoints
+    missing_endpoints = []
+    for ep in ["/health", "/ingest", "/query", "/metrics"]:
+        if ep not in code:
+            missing_endpoints.append(ep)
+    if missing_endpoints:
+        return False, f"Missing required endpoints: {missing_endpoints}"
+
+    # Check 5: ChromaDB usage
+    if "chromadb" not in code:
+        return False, "Missing ChromaDB — RAG service must use chromadb."
+
+    # Check 6: Langfuse tracing
+    if "langfuse" not in code.lower():
+        return False, "Missing Langfuse — RAG service must include tracing."
+
+    # Check 7: No Streamlit imports
+    if "import streamlit" in code or "from streamlit" in code:
+        return False, "Streamlit import found in RAG service — use FastAPI only."
+
+    # Check 8: Pydantic models
+    if "BaseModel" not in code:
+        return False, "Missing Pydantic BaseModel — define request/response schemas."
+
+    # Check 9: CORS middleware
+    if "CORSMiddleware" not in code:
+        return False, "Missing CORSMiddleware — RAG service must enable CORS."
+
+    # Check 10: No stub implementations
+    stub_patterns = ["pass  # TODO", "# TODO:", "raise NotImplementedError"]
+    found_stubs = [p for p in stub_patterns if p in code]
+    if found_stubs:
+        return False, f"Incomplete implementation: {found_stubs[0]}. All functions must be fully implemented."
+
+    return True, "All RAG checks passed."
 
 
 def validator_agent(state: dict[str, Any]) -> dict[str, Any]:
     code = state.get("code", "")
-    passed, message = validate_code(code)
+    project_mode = state.get("project_mode", "streamlit_crud")
+
+    if project_mode == "fastapi_rag":
+        passed, message = validate_rag_code(code)
+    else:
+        passed, message = validate_code(code)
+
     state["validation_passed"] = passed
     state["validation_error"] = None if passed else message
 
     if passed:
-        # Reset counter so Reviewer-retry cycles each get a fresh budget.
         state["validation_attempts"] = 0
-        print("\n  [Validator] PASSED - All checks passed.")
+        print(f"\n  [Validator] PASSED ({project_mode}) - All checks passed.")
     else:
         state["validation_attempts"] = state.get("validation_attempts", 0) + 1
-        print(f"\n  [Validator] FAILED - Sending back to Developer.\n  Reason: {message}")
+        print(f"\n  [Validator] FAILED ({project_mode}) - Sending back to Developer.\n  Reason: {message}")
 
     return state
 
