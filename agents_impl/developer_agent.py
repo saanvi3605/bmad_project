@@ -174,12 +174,20 @@ EMBEDDING STRATEGY:
 - Try Anthropic voyage-3 first: client.embeddings.create(model="voyage-3", input=[text])
 - Fallback: use a simple deterministic hash-based 384-dim float vector so the app works without voyage API access
 
-LANGFUSE TRACING:
+LANGFUSE TRACING (Langfuse v4 SDK — use EXACTLY this API):
 - lf = Langfuse() once at module level
-- Per /query: root_span = lf.start_observation(name="rag_query", as_type="span", trace_context={{"session_id": request_id}})
-- Child spans: root_span.start_observation(name="embedding", as_type="span")
-- Always call span.end() in a finally block
-- Push score: lf.score_current_span(name="faithfulness", value=score)
+- Per /query call:
+    trace = lf.trace(name="rag_query", session_id=str(uuid.uuid4()))
+    emb_span   = trace.span(name="embedding");   emb_span.end(output={{"dims": len(vec)}})
+    ret_span   = trace.span(name="retrieval");   ret_span.end(output={{"n": top_k}})
+    build_span = trace.span(name="prompt_build"); build_span.end()
+    llm_span   = trace.span(name="llm_call");    llm_span.end(output={{"answer": answer[:100]}})
+    eval_span  = trace.span(name="evaluation");  eval_span.end(output={{"faithfulness": score}})
+    trace.score(name="faithfulness", value=float(score))
+    lf.flush()
+- NEVER use lf.start_observation() — that method does not exist in Langfuse v4
+- NEVER use lf.score_current_span() — use trace.score() instead
+- Import uuid at the top for session IDs
 
 RULES FOR requirements.txt:
 - fastapi>=0.110.0
@@ -207,6 +215,83 @@ RULES FOR .env.example:
 - LANGFUSE_SECRET_KEY=sk-lf-...
 - LANGFUSE_HOST=https://cloud.langfuse.com
 - CHROMA_PATH=./chroma_db
+
+COMMON MISTAKES — every item below has broken generated RAG services before. Do NOT repeat them:
+
+## LangChain import paths (these changed in LangChain 0.2+)
+- NEVER use: from langchain.embeddings.anthropic import AnthropicEmbeddings
+- NEVER use: from langchain.llms.anthropic import Anthropic
+- NEVER use: from langchain.chat_models import ChatAnthropic
+- These old paths no longer exist. Use the Anthropic SDK directly instead:
+    from anthropic import Anthropic
+    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    resp = client.messages.create(model="claude-3-5-sonnet-20241022",
+                                   max_tokens=1024,
+                                   messages=[{{"role":"user","content":prompt}}])
+    answer = resp.content[0].text
+- For embeddings use the voyageai package or the hash-based fallback — never AnthropicEmbeddings
+
+## Anthropic client usage
+- The Anthropic() object itself has no .messages — call client.messages.create(), NOT llm.messages.create()
+- WRONG:  llm = Anthropic(); response = llm.messages.create(...)
+- RIGHT:  client = Anthropic(); response = client.messages.create(...)
+- resp.content[0].text is the answer string — NOT resp.choices[0].message.content (that's OpenAI)
+
+## Langfuse v4 API — lf.start_observation() does not exist
+- WRONG (v2 API, completely broken in v4):
+    root_span = lf.start_observation(name="rag_query", as_type="span", ...)
+    child = root_span.start_observation(name="embedding", as_type="span")
+    lf.score_current_span(name="faithfulness", value=score)
+- RIGHT (v4 API):
+    trace = lf.trace(name="rag_query", session_id=session_id)
+    span  = trace.span(name="embedding")
+    span.end()
+    trace.score(name="faithfulness", value=float(score))
+    lf.flush()
+
+## QueryRequest must not reference fields that don't exist
+- QueryRequest has ONLY: question (str) and top_k (int = 5)
+- NEVER access request.session_id — it is not in the model
+- Generate a session_id inside the endpoint: session_id = str(uuid.uuid4())
+
+## ChromaDB — always store document text, not just metadata
+- WRONG (stores metadata only — retrieval returns no readable text):
+    collection.add(ids=[...], embeddings=[...], metadatas=[...])
+- RIGHT (stores the actual chunk text so it can be returned in citations):
+    collection.add(ids=[...], embeddings=[...], documents=[chunk_text], metadatas=[...])
+- When querying, include_documents=True is the default; results["documents"][0] is the list of texts
+
+## Citations must contain readable snippet text, not integers
+- results["metadatas"][0] is a list of dicts; results["documents"][0] is a list of strings
+- WRONG: Citation(snippet=result["chunk_index"])   ← chunk_index is an integer
+- RIGHT: Citation(snippet=doc_text[:200])           ← doc_text from results["documents"][0][i]
+
+## Faithfulness score must be a float, not a response object
+- The second LLM call returns a Messages object — you must parse the number out of the text:
+    raw = client.messages.create(...).content[0].text   # e.g. "8" or "Score: 7/10"
+    import re
+    m = re.search(r'\\d+', raw)
+    faithfulness = float(m.group()) / 10.0 if m else 0.5
+- NEVER pass the response object directly to int() or float()
+
+## File reading in FastAPI sync endpoints
+- file.read() returns a coroutine in async context; in sync endpoints use file.file.read():
+    contents = file.file.read()          # sync endpoint
+    contents = await file.read()         # async endpoint (def query → async def query)
+- For PDF: pass the file object to PdfReader, not the raw bytes decoded as utf-8:
+    from io import BytesIO
+    reader = PdfReader(BytesIO(contents))
+
+## Hash-based embedding fallback must produce valid float vectors
+- Python's hash() returns a large integer — ChromaDB needs floats in a consistent range
+- WRONG:  [[hash(chunk)] * 384]   ← single huge integer, not 384 floats
+- RIGHT:
+    import hashlib
+    def hash_embed(text: str, dim: int = 384) -> list[float]:
+        digest = hashlib.md5(text.encode()).digest()  # 16 bytes
+        rng = [b / 255.0 - 0.5 for b in digest]      # 16 floats in [-0.5, 0.5]
+        # tile to fill dim dimensions
+        return (rng * (dim // len(rng) + 1))[:dim]
 
 CRITICAL: Return ONLY the file contents with ### FILE: ### delimiters. No prose, no explanations.
 """
