@@ -90,18 +90,46 @@ class EvalResult:
 # ---------------------------------------------------------------------------
 
 _STOP_WORDS = frozenset({
+    # Articles, conjunctions, prepositions
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
-    "for", "of", "with", "by", "from", "is", "are", "was", "were",
-    "be", "been", "being", "have", "has", "had", "do", "does", "did",
+    "for", "of", "with", "by", "from", "into", "through", "about",
+    "above", "below", "between", "during", "before", "after", "against",
+    # Auxiliary verbs
+    "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
     "will", "would", "could", "should", "may", "might", "must", "shall",
-    "that", "this", "these", "those", "i", "you", "he", "she", "it",
-    "we", "they", "my", "your", "his", "her", "its", "our", "their",
-    "what", "which", "who", "how", "when", "where", "why", "can", "not",
-    "no", "so", "if", "as", "up", "out", "about", "into", "through",
-    "each", "all", "any", "both", "few", "more", "most", "other", "some",
-    "also", "just", "than", "then", "them", "they", "there", "use",
-    "using", "used", "include", "including", "provides", "provide",
-    "build", "create", "add", "make", "get", "set", "show", "display",
+    "can", "need", "dare", "ought",
+    # Pronouns
+    "i", "you", "he", "she", "it", "we", "they",
+    "my", "your", "his", "her", "its", "our", "their",
+    "me", "him", "us", "them", "who", "what", "which",
+    # Demonstratives / quantifiers
+    "that", "this", "these", "those", "each", "all", "any",
+    "both", "few", "more", "most", "other", "some", "such",
+    "every", "either", "neither", "enough", "several",
+    # Common adverbs / connectors
+    "not", "no", "so", "if", "as", "up", "out", "also", "just",
+    "than", "then", "there", "here", "when", "where", "why", "how",
+    "very", "too", "quite", "rather", "well", "already", "still",
+    "yet", "even", "only", "however", "therefore", "thus",
+    # Generic action verbs that carry no domain meaning
+    "use", "using", "used", "include", "including",
+    "provides", "provide", "provided",
+    "build", "create", "add", "make", "get", "set",
+    "show", "display", "allow", "allows", "ensure",
+    "support", "supports", "need", "needs", "want", "wants",
+    "enable", "enables", "give", "gives", "let", "lets",
+    "keep", "keeps", "take", "takes", "put", "run", "runs",
+    "return", "returns", "call", "calls", "send", "sends",
+    "handle", "handles", "manage", "manages",
+    # Generic app/project words that appear in almost every request
+    "app", "application", "system", "feature", "page",
+    "section", "panel", "view", "screen", "tab",
+    "user", "users", "data", "field", "fields",
+    "form", "forms", "table", "list", "item", "items",
+    "new", "edit", "delete", "save", "submit", "cancel",
+    "simple", "basic", "complete", "full", "good", "best",
+    "able", "based", "following", "example", "way",
 })
 
 
@@ -239,20 +267,15 @@ def _parse_llm_score(raw: str, fallback_reason: str) -> tuple[float, str]:
 
 
 def _invoke_light_llm(prompt: str, state: dict[str, Any]) -> str:
-    """Call the light (8b) LLM directly — bypasses run_agent to avoid logging overhead."""
-    from core.agent_runner import _get_llm
-    lf_handler = state.get("langfuse_handler")
-    callbacks = (
-        [lf_handler]
-        if lf_handler is not None and hasattr(lf_handler, "on_llm_start")
-        else []
+    """Call the light (8b) LLM via run_agent — uses LiteLLM, not LangChain."""
+    from core.agent_runner import run_agent
+    return run_agent(
+        prompt=prompt,
+        agent_name="eval_agent",
+        prompt_key="eval_llm_judge",
+        state=state,
+        light=True,
     )
-    llm = _get_llm(light=True)
-    if callbacks:
-        response = llm.invoke(prompt, config={"callbacks": callbacks})
-    else:
-        response = llm.invoke(prompt)
-    return response.content
 
 
 def score_feature_coverage(state: dict[str, Any]) -> DimensionScore:
