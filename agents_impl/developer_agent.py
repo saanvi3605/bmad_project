@@ -46,6 +46,68 @@ RULES (all mandatory):
 - For integer inputs (marks, counts, quantities, IDs) always use format="%d" and step=1 — NEVER format="%.2f"
 - Only use format="%.2f" for currency or decimal inputs like prices, rates, and ratios
 - SQLite table names must use snake_case — never spaces (e.g. menu_items not "Menu Items", order_details not "Order Details")
+
+COMMON MISTAKES — every item below has broken generated apps before. Do NOT repeat them:
+
+## Function ordering
+- Define EVERY helper function BEFORE it is called. If page A calls generate_answer(), score_chunk(),
+  retrieve_top_chunks() — all three must appear above page A's code block, not below it.
+- Never call a function at module level before its def appears in the file.
+
+## Streamlit API versions
+- NEVER use st.experimental_rerun() — it was removed in Streamlit 1.30. Use st.rerun() instead.
+- NEVER use st.experimental_get_query_params() — use st.query_params instead.
+- NEVER use st.experimental_set_query_params() — use st.query_params.update() instead.
+- NEVER use st.experimental_memo or st.experimental_singleton — use st.cache_data / st.cache_resource.
+
+## Form submit button placement
+- st.form_submit_button() must be called UNCONDITIONALLY at the top level of the with st.form(): block.
+  Do NOT put it inside an if/else branch within the form. Streamlit shows "This form has no submit
+  button" whenever the condition is False.
+  WRONG:
+    with st.form("f"):
+        x = st.text_input("x")
+        if some_condition:
+            submitted = st.form_submit_button("Save")   # hidden when condition is False!
+  RIGHT:
+    with st.form("f"):
+        x = st.text_input("x")
+        submitted = st.form_submit_button("Save")       # always visible
+    if submitted and some_condition:
+        ...
+
+## Imports
+- Write each import exactly once. Duplicate imports cause isort/black to emit warnings and make
+  the file harder to read. If you need os and datetime, import them once at the top.
+- Never import python_dotenv — the package is python-dotenv but the import name is dotenv:
+    from dotenv import load_dotenv   # correct
+    import python_dotenv             # WRONG — this package does not exist
+
+## SQLite constraints
+- Use CHECK(col != '') on TEXT NOT NULL columns that must not be empty strings. NOT NULL alone
+  does NOT prevent empty strings in SQLite.
+  Example: name TEXT NOT NULL CHECK(name != '')
+- Use CHECK(score IN (0, 1)) or CHECK(value BETWEEN 0 AND 100) for bounded integers.
+- For schema migrations (columns added after initial release), use PRAGMA table_info(table) to
+  detect missing columns and ALTER TABLE … ADD COLUMN — never drop and recreate a table with data.
+
+## Session state and reruns
+- Always initialise every session_state key before reading it:
+    if "my_key" not in st.session_state:
+        st.session_state.my_key = default_value
+- After a st.rerun() the entire script re-executes from line 1. Do not assume local variables
+  survive a rerun — persist anything you need in st.session_state.
+- To show feedback buttons (👍/👎) after a form submission, store the conversation/record id in
+  st.session_state inside the if submitted: block, then read it OUTSIDE the form for rendering.
+
+## Completeness
+- Never leave placeholder implementations like "return 'This is a placeholder answer'" or
+  "pass  # TODO". Every function must contain real, working logic.
+- If an LLM call is part of the design, implement it fully using the Groq SDK:
+    from groq import Groq
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    resp = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[...], max_tokens=1024)
+    answer = resp.choices[0].message.content
 """
 
 UI_RULES = ""
