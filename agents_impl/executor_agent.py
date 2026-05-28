@@ -44,25 +44,30 @@ def _find_free_port(preferred: int = 8502, scan_limit: int = 20) -> int:
 
 
 def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
+    project_mode = state.get("project_mode", "streamlit_crud")
+
+    if project_mode == "fastapi_rag":
+        return _execute_rag(state)
+    return _execute_streamlit(state)
+
+
+def _execute_streamlit(state: dict[str, Any]) -> dict[str, Any]:
+    """Original Streamlit executor — unchanged."""
     code = state.get("code", "")
     code = code.replace("```python", "").replace("```", "").strip()
 
-    # ── Resolve output path from config ───────────────────────────────────
     exec_cfg = get_executor_config()
     output_path: str = exec_cfg.get("output_file", "generated_app.py")
     startup_wait: int = int(exec_cfg.get("startup_wait_seconds", 8))
 
-    # Ensure parent directory exists (e.g. outputs/)
     parent = os.path.dirname(output_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(code)
-
     print(f"[Executor] Code saved to {output_path}")
 
-    # ── Optional session archiving ─────────────────────────────────────────
     session_cfg = get_session_config()
     if session_cfg.get("archive_outputs", False):
         session_id = state.get("session_id")
@@ -72,24 +77,22 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
             shutil.copy2(output_path, os.path.join(archive_dir, "generated_app.py"))
             state["output_dir"] = archive_dir
 
-    # ── Launch subprocess — streamlit run instead of python ───────────────
     try:
         import sys
         port = _find_free_port(8502)
         process = subprocess.Popen(
             [sys.executable, "-m", "streamlit", "run", output_path,
              "--server.headless", "true", "--server.port", str(port)],
-            stdout=subprocess.DEVNULL,  # Discard stdout — Streamlit startup banner
-            stderr=subprocess.PIPE,     # Capture stderr only (crash messages)
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
         )
-
         time.sleep(startup_wait)
 
         if process.poll() is None:
             state["execution_result"] = f"App started successfully on port {port}."
             state["execution_error"] = ""
-            state["runtime_error"] = ""   # clear any previous crash — success
+            state["runtime_error"] = ""
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -104,7 +107,6 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
             state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
             print(f"[Executor] Crash detected (attempt {state['runtime_fix_attempts']}). "
                   f"Routing to Developer for runtime fix.")
-
     except Exception as e:
         error_text = str(e)
         state["execution_result"] = ""
@@ -112,6 +114,95 @@ def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
         state["runtime_error"] = error_text
         state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
         print(f"[Executor] Exception (attempt {state['runtime_fix_attempts']}): {error_text}")
+
+    return state
+
+
+def _execute_rag(state: dict[str, Any]) -> dict[str, Any]:
+    """
+    RAG mode executor — saves all generated files then launches with uvicorn.
+
+    File layout:
+      outputs/rag/{session_id}/main.py
+      outputs/rag/{session_id}/requirements.txt
+      outputs/rag/{session_id}/docker-compose.yml
+      outputs/rag/{session_id}/.env.example
+    """
+    import sys
+
+    session_id = state.get("session_id", "rag_output")
+    rag_dir = os.path.join("outputs", "rag", session_id)
+    os.makedirs(rag_dir, exist_ok=True)
+
+    # ── Save main.py ──────────────────────────────────────────────────────
+    main_code = state.get("code", "")
+    main_path = os.path.join(rag_dir, "main.py")
+    with open(main_path, "w", encoding="utf-8") as f:
+        f.write(main_code)
+    print(f"[Executor-RAG] main.py saved → {main_path}")
+
+    # ── Save extra files (requirements.txt, docker-compose.yml, etc.) ─────
+    extra_files: dict[str, str] = state.get("extra_files") or {}
+    for filename, content in extra_files.items():
+        file_path = os.path.join(rag_dir, filename)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"[Executor-RAG] {filename} saved → {file_path}")
+
+    state["output_dir"] = rag_dir
+
+    # Also write main path to the canonical output location for download
+    canonical = os.path.join("outputs", "generated_app.py")
+    try:
+        shutil.copy2(main_path, canonical)
+    except Exception:
+        pass
+
+    # ── Launch uvicorn ────────────────────────────────────────────────────
+    startup_wait = int(get_executor_config().get("startup_wait_seconds", 8))
+    port = _find_free_port(8000)
+
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app",
+             "--host", "0.0.0.0", "--port", str(port), "--reload"],
+            cwd=rag_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(startup_wait)
+
+        if process.poll() is None:
+            state["execution_result"] = (
+                f"RAG API started on http://localhost:{port} | "
+                f"Docs: http://localhost:{port}/docs | "
+                f"Files: {rag_dir}"
+            )
+            state["execution_error"] = ""
+            state["runtime_error"] = ""
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            print(f"[Executor-RAG] uvicorn started on port {port}.")
+        else:
+            _, stderr = process.communicate()
+            error_text = stderr.strip() if stderr else "uvicorn exited before startup."
+            state["execution_result"] = "uvicorn exited before startup completed."
+            state["execution_error"] = error_text
+            state["runtime_error"] = error_text
+            state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
+            print(f"[Executor-RAG] Crash (attempt {state['runtime_fix_attempts']}): {error_text[:200]}")
+
+    except Exception as e:
+        error_text = str(e)
+        state["execution_result"] = ""
+        state["execution_error"] = error_text
+        state["runtime_error"] = error_text
+        state["runtime_fix_attempts"] = (state.get("runtime_fix_attempts") or 0) + 1
+        print(f"[Executor-RAG] Exception: {error_text}")
 
     return state
 

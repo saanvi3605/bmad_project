@@ -103,67 +103,70 @@ class TestExtractTokens:
         assert "token" in str(w[0].message).lower()
 
 
+def _make_litellm_response(content: str, prompt_tokens: int, completion_tokens: int) -> MagicMock:
+    """Build a mock that looks like a litellm.ModelResponse."""
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = content
+    mock_resp.usage.prompt_tokens = prompt_tokens
+    mock_resp.usage.completion_tokens = completion_tokens
+    return mock_resp
+
+
 class TestRunAgent:
     def test_run_agent_returns_content(self):
-        import core.agent_runner as ar
-
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(
-            content="generated code here",
-            usage_metadata={"input_tokens": 10, "output_tokens": 20},
-        )
-        ar._llm = mock_llm
-
+        mock_resp = _make_litellm_response("generated code here", 10, 20)
         state = {
             "langfuse_handler": None,
             "agent_log": [],
             "session_id": "test-session",
         }
-        result = ar.run_agent("test prompt", "developer", "developer_clean_v1", state)
+        with patch("core.agent_runner._call_litellm", return_value=mock_resp):
+            result = __import__("core.agent_runner", fromlist=["run_agent"]).run_agent(
+                "test prompt", "developer", "developer_clean_v1", state
+            )
         assert result == "generated code here"
 
     def test_run_agent_appends_to_agent_log(self):
-        import core.agent_runner as ar
-
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(
-            content="code",
-            usage_metadata={"input_tokens": 5, "output_tokens": 15},
-        )
-        ar._llm = mock_llm
-
+        mock_resp = _make_litellm_response("code", 5, 15)
         state = {
             "langfuse_handler": None,
             "agent_log": [],
             "session_id": "test-session",
         }
-        ar.run_agent("prompt", "planner", "planner_v1", state)
+        with patch("core.agent_runner._call_litellm", return_value=mock_resp):
+            __import__("core.agent_runner", fromlist=["run_agent"]).run_agent(
+                "prompt", "planner", "planner_v1", state
+            )
         assert len(state["agent_log"]) == 1
         rec = state["agent_log"][0]
         assert rec.agent_name == "planner"
         assert rec.input_tokens == 5
         assert rec.output_tokens == 15
 
-    def test_run_agent_attaches_langfuse_handler(self):
-        import core.agent_runner as ar
-
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(
-            content="response",
-            usage_metadata={"input_tokens": 1, "output_tokens": 1},
-        )
-        ar._llm = mock_llm
-
-        fake_handler = MagicMock()
-        state = {
-            "langfuse_handler": fake_handler,
-            "agent_log": [],
-            "session_id": "test-session",
+    def test_run_agent_logs_langfuse_generation(self):
+        """When state has an lf_context dict, log_langfuse_generation is called with it."""
+        mock_resp = _make_litellm_response("response", 1, 1)
+        lf_ctx = {
+            "trace_id": "trace-abc",
+            "session_id": "sess-xyz",
+            "trace_name": "Test Run",
         }
-        ar.run_agent("prompt", "architect", "architect_v1", state)
-        call_kwargs = mock_llm.invoke.call_args
-        callbacks = call_kwargs[1]["config"]["callbacks"]
-        assert fake_handler in callbacks
+        state = {
+            "langfuse_handler": lf_ctx,
+            "agent_log": [],
+            "session_id": "sess-xyz",
+        }
+        with patch("core.agent_runner._call_litellm", return_value=mock_resp), \
+             patch("core.agent_runner.log_langfuse_generation") as mock_lf:
+            __import__("core.agent_runner", fromlist=["run_agent"]).run_agent(
+                "prompt", "architect", "architect_v1", state
+            )
+        mock_lf.assert_called_once()
+        kwargs = mock_lf.call_args.kwargs
+        assert kwargs["lf_ctx"] == lf_ctx
+        assert kwargs["agent_name"] == "architect"
+        assert kwargs["input_tokens"] == 1
+        assert kwargs["output_tokens"] == 1
 
 
 class TestBuildInitialState:

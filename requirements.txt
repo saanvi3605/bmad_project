@@ -2,15 +2,14 @@
 # Install with: pip install -r requirements.txt
 
 # ── LLM / LangChain ──────────────────────────────────────────────────────────
-langchain-groq>=0.2.0
-langchain-google-genai>=2.0.0
+litellm>=1.0.0
 langchain-core>=0.2.0
 
 # ── LangGraph orchestration ───────────────────────────────────────────────────
 langgraph>=0.2.0
 
 # ── Observability ─────────────────────────────────────────────────────────────
-langfuse>=3.0.0
+langfuse>=4.0.0
 
 # ── Generated app runtime ────────────────────────────────────────────────────
 fastapi>=0.110.0
@@ -28,6 +27,10 @@ isort>=5.13.0
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 streamlit>=1.32.0
 pandas>=2.0.0
+plotly>=5.0.0
+
+# ── Groq SDK (generated knowledge-base apps) ─────────────────────────────────
+groq>=0.5.0
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 mcp>=1.0.0

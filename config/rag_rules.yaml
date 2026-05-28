@@ -1,0 +1,39 @@
+# config/rag_rules.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# BMAD Pipeline — Rules appended to RAG mode (fastapi_rag) requests.
+#
+# These replace the Streamlit-specific rules from pipeline_rules.yaml.
+# Loaded by main.py and streamlit_app.py when project_mode == "fastapi_rag".
+# ─────────────────────────────────────────────────────────────────────────────
+
+rag_rules:
+  description: "Constraints for FastAPI RAG service generation"
+  rules:
+    - "Use FastAPI as the ONLY web framework — no Streamlit, no Flask."
+    - "Use ChromaDB (PersistentClient) as the vector store."
+    - "Use LangChain RecursiveCharacterTextSplitter (chunk_size=512, overlap=50)."
+    - "Use Anthropic API: claude-3-haiku-20240307 for embeddings, claude-3-5-sonnet-20241022 for generation."
+    - "Use Langfuse for tracing: one parent trace per /query call with child spans."
+    - "Child spans required: embedding, retrieval, prompt_build, llm_call, evaluation."
+    - "Every /query response must include citations: [{filename, snippet, score}]."
+    - "Include a GET /health endpoint returning {status: ok, doc_count: N}."
+    - "Include a GET /metrics endpoint returning corpus and latency statistics."
+    - "Include a POST /ingest endpoint accepting file uploads (PDF, YAML, JSON, MD)."
+    - "Use pydantic BaseModel for all request and response schemas."
+    - "Enable CORS for all origins using fastapi.middleware.cors.CORSMiddleware."
+    - "Output MUST use ### FILE: filename ### delimiters for every file."
+    - "Required files: main.py, requirements.txt, docker-compose.yml, .env.example"
+
+prompt_suffix: |
+
+  RAG SERVICE CONSTRAINTS (non-negotiable):
+  - Framework: FastAPI only (no Streamlit, no Flask)
+  - Vector DB: ChromaDB with PersistentClient (path="./chroma_db")
+  - Chunking: LangChain RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=50)
+  - LLM: Anthropic claude-3-5-sonnet-20241022 for generation
+  - Tracing: Langfuse — one trace per /query, child spans for embed/retrieve/build/llm/eval
+  - Citations: every /query response must return [{filename, snippet, score}]
+  - Endpoints: POST /ingest, POST /query, GET /health, GET /metrics
+  - CORS: allow all origins
+  - Output format: use ### FILE: filename ### delimiter before EVERY file
+  - Required files: main.py, requirements.txt, docker-compose.yml, .env.example

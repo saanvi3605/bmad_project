@@ -523,13 +523,17 @@ def _load_prompt_templates() -> list[dict]:
         return []
 
 
-@st.cache_resource
-def _load_pipeline_rules() -> str:
+def _load_pipeline_rules(mode: str = "streamlit_crud") -> str:
     try:
         import yaml
-        cfg_path = pathlib.Path(__file__).parent / "config" / "pipeline_rules.yaml"
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        return data.get("prompt_suffix", "")
+        if mode == "fastapi_rag":
+            cfg_path = pathlib.Path(__file__).parent / "config" / "rag_rules.yaml"
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            return data.get("prompt_suffix", "")
+        else:
+            cfg_path = pathlib.Path(__file__).parent / "config" / "pipeline_rules.yaml"
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            return data.get("prompt_suffix", "")
     except Exception:
         return ""
 
@@ -551,6 +555,7 @@ def _init_session():
         "test_output": None,
         "rerun_prompt": None,
         "template_prompt": None,
+        "project_mode": "streamlit_crud",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -562,7 +567,7 @@ _init_session()
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
-def _run_pipeline_worker(user_request: str, result_q: queue.Queue) -> None:
+def _run_pipeline_worker(user_request: str, result_q: queue.Queue, project_mode: str = "streamlit_crud") -> None:
     final_state: Optional[dict] = None
     error_msg: Optional[str] = None
     try:
@@ -572,13 +577,14 @@ def _run_pipeline_worker(user_request: str, result_q: queue.Queue) -> None:
         reset_llm_singletons()
         session_id, langfuse_handler = create_session("BMAD Streamlit Run")
 
-        rules_suffix = _load_pipeline_rules()
+        rules_suffix = _load_pipeline_rules(project_mode)
         full_request = user_request + rules_suffix
 
         initial_state = build_initial_state(
             user_request=full_request,
             session_id=session_id,
             langfuse_handler=langfuse_handler,
+            project_mode=project_mode,
         )
 
         for stale in [
@@ -633,6 +639,35 @@ def _render_sidebar():
             """,
             unsafe_allow_html=True,
         )
+        st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0.5rem 0 1rem"/>', unsafe_allow_html=True)
+
+        # ── Project mode selector ─────────────────────────────────────────
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#6366F1;'
+            'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem">'
+            '⚙️ Project Mode</div>',
+            unsafe_allow_html=True,
+        )
+        mode_options = {
+            "streamlit_crud": "🖥️ Streamlit CRUD App",
+            "fastapi_rag":    "🔍 FastAPI RAG Service",
+        }
+        selected_mode = st.radio(
+            "Project Mode",
+            options=list(mode_options.keys()),
+            format_func=lambda m: mode_options[m],
+            index=0 if st.session_state.get("project_mode", "streamlit_crud") == "streamlit_crud" else 1,
+            key="mode_radio",
+            label_visibility="collapsed",
+            disabled=st.session_state.get("running", False),
+        )
+        st.session_state["project_mode"] = selected_mode
+
+        if selected_mode == "fastapi_rag":
+            st.caption("Generates: FastAPI + ChromaDB + LangChain + Langfuse tracing")
+        else:
+            st.caption("Generates: Streamlit + SQLite single-file app")
+
         st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0.5rem 0 1rem"/>', unsafe_allow_html=True)
 
         # ── Template library ──────────────────────────────────────────────
@@ -1410,7 +1445,8 @@ if run_clicked and (user_request or "").strip():
 
     worker = threading.Thread(
         target=_run_pipeline_worker,
-        args=(user_request.strip(), st.session_state["result_queue"]),
+        args=(user_request.strip(), st.session_state["result_queue"],
+              st.session_state.get("project_mode", "streamlit_crud")),
         daemon=True,
     )
     worker.start()

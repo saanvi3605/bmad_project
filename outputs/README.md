@@ -1,17 +1,15 @@
-# Library Management System
-A tool designed for librarians to manage book collections and member registrations.
+# API Knowledge Assistant
+A Streamlit application for developers and technical writers to store, manage, and analyze API documentation.
 
 ## Overview
-The Library Management System is a Streamlit application that helps librarians keep track of available books, issued books, and members with overdue fines. It is intended for use by librarians in libraries.
+The API Knowledge Assistant is a Streamlit application designed to help developers and technical writers store, manage, and analyze API documentation. It allows users to ask questions, receive answers, and track feedback, while also providing an admin panel for monitoring database health and exporting chat history.
 
 ## Features
-* Add new books with title, author, ISBN, genre, and total copies
-* Remove books from the collection
-* Register new members with name, member ID, and phone number
-* Issue books to registered members with a 14-day due date
-* Calculate an overdue fine of Rs. 2 per day if a book is returned late
-* Display metric cards showing total books, copies currently issued, available copies, and members with overdue books
-* Search for books by title or author using a search bar
+* Ask questions and receive answers based on stored API documentation
+* Upload, manage, and delete API documentation files in various formats
+* Display performance metrics, including total questions, thumbs up rate, average latency, and feedback distribution
+* Admin panel for monitoring database health, clearing all data, and exporting chat history
+* Navigation between four pages: Chat Assistant, Document Manager, Analytics, and Admin Panel
 
 ## Tech Stack
 | Layer        | Technology              |
@@ -27,17 +25,21 @@ The Library Management System is a Streamlit application that helps librarians k
 * Python 3.10+
 * pip
 
-### Clone / download the project
-Clone the repository using `git clone` or download the zip file from the repository.
+### Clone / Download the Project
+Clone the repository using Git:
+```bash
+git clone https://github.com/your-username/api-knowledge-assistant.git
+```
+Or download the project as a ZIP file from the GitHub repository.
 
-### Install dependencies
+### Install Dependencies
 ```bash
 pip install streamlit pandas plotly python-dotenv
 ```
 
 ### Create a `.env` file
-Create a `.env` file in the project root with the following content:
-```makefile
+Create a `.env` file in the project root directory:
+```bash
 DB_PATH=app.db
 ```
 
@@ -45,43 +47,50 @@ DB_PATH=app.db
 ```bash
 streamlit run generated_app.py
 ```
-The default browser URL is http://localhost:8501.
+The application will start on http://localhost:8501 by default.
 
 ## Running Tests
 ```bash
 pip install pytest
 python -m pytest test_generated_app.py -v
 ```
-The tests cover the core functionality of the application, including adding and removing books, registering and issuing books to members, and calculating overdue fines.
+The tests cover the main functionality of the application, including question answering, document uploading, and analytics display.
 
 ## Database Schema
 ```sql
-CREATE TABLE books (
+CREATE TABLE chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    author TEXT NOT NULL,
-    ISBN TEXT NOT NULL,
-    genre TEXT NOT NULL,
-    total_copies INTEGER NOT NULL,
-    available_copies INTEGER NOT NULL,
-    issued_copies INTEGER NOT NULL DEFAULT 0
+    filename TEXT NOT NULL,
+    document_type TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    upload_timestamp DATETIME NOT NULL,
+    char_count INTEGER NOT NULL
 );
 
-CREATE TABLE members (
+CREATE TABLE conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    member_ID TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    overdue_fine REAL NOT NULL DEFAULT 0.0,
-    last_issued_book TEXT
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    chunks_used TEXT NOT NULL,
+    created_at DATETIME NOT NULL
 );
 
-CREATE TABLE issued_books (
+CREATE TABLE citations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    book_id INTEGER NOT NULL,
-    member_id INTEGER NOT NULL,
-    issue_date DATE NOT NULL,
-    due_date DATE NOT NULL
+    conversation_id INTEGER NOT NULL,
+    chunk_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    snippet TEXT NOT NULL,
+    relevance_score REAL NOT NULL
+);
+
+CREATE TABLE feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    score INTEGER NOT NULL CHECK(score IN (0, 1)),
+    created_at DATETIME NOT NULL
 );
 ```
 

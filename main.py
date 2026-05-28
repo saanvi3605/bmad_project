@@ -16,20 +16,26 @@ import yaml
 import pathlib
 
 
-def _load_pipeline_rules() -> str:
-    """Load the pipeline constraints suffix from config/pipeline_rules.yaml."""
+def _load_pipeline_rules(mode: str = "streamlit_crud") -> str:
+    """Load the prompt suffix for the given project mode."""
     try:
-        cfg_path = pathlib.Path(__file__).parent / "config" / "pipeline_rules.yaml"
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        return data.get("prompt_suffix", "")
+        if mode == "fastapi_rag":
+            cfg_path = pathlib.Path(__file__).parent / "config" / "rag_rules.yaml"
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            return data.get("prompt_suffix", "")
+        else:
+            cfg_path = pathlib.Path(__file__).parent / "config" / "pipeline_rules.yaml"
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            return data.get("prompt_suffix", "")
     except Exception:
         return ""
 
 
-def run(user_request: str) -> None:
+def run(user_request: str, project_mode: str = "auto") -> None:
     from core.guardrails import check_prompt, format_rejection
     from core.observability import create_session, get_pipeline_summary, flush
     from core.agent_runner import build_initial_state, reset_llm_singletons
+    from core.mode_detector import detect_mode, mode_label
     from orchestration.graph import app
 
     # ── Guardrail check — before spending any tokens ───────────────────────
@@ -41,14 +47,19 @@ def run(user_request: str) -> None:
         print(format_rejection(reason).replace("**", "").replace("_", ""))
         return
 
+    # ── Auto-detect project mode if not explicitly set ─────────────────────
+    if project_mode == "auto":
+        project_mode = detect_mode(user_request)
+
     reset_llm_singletons()
 
     print("\n" + "=" * 70)
     print("  BMAD AI ORCHESTRATION PIPELINE")
     print("=" * 70)
-    print(f"\nRequest: {user_request[:120]}{'...' if len(user_request) > 120 else ''}\n")
+    print(f"\nRequest: {user_request[:120]}{'...' if len(user_request) > 120 else ''}")
+    print(f"Mode:    {mode_label(project_mode)} ({project_mode})\n")
 
-    rules_suffix = _load_pipeline_rules()
+    rules_suffix = _load_pipeline_rules(project_mode)
     full_request = user_request + rules_suffix
 
     session_id, langfuse_handler = create_session("BMAD CLI Run")
@@ -58,6 +69,7 @@ def run(user_request: str) -> None:
         user_request=full_request,
         session_id=session_id,
         langfuse_handler=langfuse_handler,
+        project_mode=project_mode,
     )
 
     print("Starting pipeline...\n")
@@ -110,7 +122,12 @@ def run(user_request: str) -> None:
 
     output_dir = final_state.get("output_dir", "")
     if output_dir:
-        print(f"Session archive: {output_dir}")
+        if project_mode == "fastapi_rag":
+            print(f"RAG output dir:  {output_dir}")
+            print(f"  Start server:  cd {output_dir} && uvicorn main:app --reload --port 8000")
+            print(f"  API docs:      http://localhost:8000/docs")
+        else:
+            print(f"Session archive: {output_dir}")
 
     print()
 

@@ -2,20 +2,26 @@
 core/observability.py
 ────────────────────────────────────────────────────────────────────────────────
 Observability layer: per-pipeline session IDs, per-agent token/cost logging,
-and Langfuse tracing.
+and Langfuse tracing via the Langfuse 4.x SDK directly.
 
-Tracing strategy — LangChain CallbackHandler (v2 + v3 compatible)
-  create_session() builds a langfuse.callback.CallbackHandler and returns it
-  as langfuse_handler.  Callers pass it to:
-    • app.invoke(state, config={"callbacks": [handler]})
-        → Langfuse auto-creates spans for every LangGraph node, producing
-          the pipeline graph visualisation in the Langfuse dashboard.
-    • llm.invoke(prompt, config={"callbacks": [handler]})
-        → Langfuse auto-creates a nested ChatGroq generation with token
-          counts and latency inside the node span above.
+How it works
+  1. create_session() creates a Langfuse trace_id and returns (session_id, lf_context)
+     where lf_context is:
+       {"trace_id": "...", "session_id": "...", "trace_name": "..."}
 
-  flush(handler) ends and ships all pending events.  The handler is reset
-  to None afterwards so the next run starts with a clean exporter.
+  2. log_langfuse_generation() is called by agent_runner.run_agent() after every
+     LiteLLM call.  It logs a generation directly via lf.start_observation()
+     with real token counts, model name, input, and output — fixing the 0-token
+     problem that plagued the old CallbackHandler approach.
+
+  3. flush() calls lf.flush() to ship all pending events before the process exits.
+
+Why direct SDK instead of LiteLLM's built-in "langfuse" callback
+  LiteLLM 1.85.x is incompatible with both Langfuse 3.x and 4.x:
+    - 3.x: TypeError: unexpected keyword argument 'sdk_integration'
+    - 4.x: AttributeError: module 'langfuse' has no attribute 'version'
+  Using the Langfuse 4.x SDK directly avoids this entirely and gives us
+  full control over what appears in the dashboard.
 
 Environment variables (set in .env):
   LANGFUSE_PUBLIC_KEY
@@ -40,15 +46,28 @@ from dotenv import load_dotenv
 from core.llm_factory import get_observability_config
 
 # ---------------------------------------------------------------------------
-# Per-run CallbackHandler singleton
+# Singleton Langfuse client
 # ---------------------------------------------------------------------------
 
-_langfuse_handler: Optional[Any] = None  # langfuse.callback.CallbackHandler
+_lf_client: Optional[Any] = None
 
 
-def get_langfuse_handler() -> Optional[Any]:
-    """Return the CallbackHandler for the current pipeline run, or None."""
-    return _langfuse_handler
+def get_lf_client() -> Optional[Any]:
+    """Return the process-level Langfuse singleton, creating it on first call."""
+    global _lf_client
+    if _lf_client is None:
+        if not _ensure_env():
+            return None
+        try:
+            from langfuse import Langfuse  # type: ignore[import]
+            _lf_client = Langfuse()
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to initialise Langfuse client: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    return _lf_client
 
 
 # ---------------------------------------------------------------------------
@@ -146,61 +165,119 @@ class PipelineSummary:
 
 def create_session(
     run_name: str = "BMAD Pipeline Run",
-) -> tuple[str, Optional[Any]]:
+) -> tuple[str, Optional[dict[str, str]]]:
     """
-    Generate a new pipeline session and build a Langfuse CallbackHandler for it.
-
-    The CallbackHandler is the correct integration point for LangChain/LangGraph:
-      • Pass to app.invoke() via config={"callbacks": [handler]}
-          → Langfuse auto-instruments every LangGraph node, producing the
-            pipeline graph visualisation (PromptRefiner → Planner → … → END).
-      • Pass to llm.invoke() via config={"callbacks": [handler]}
-          → Each ChatGroq call becomes a nested generation with token counts.
+    Generate a new pipeline session and a Langfuse trace context.
 
     Returns
     -------
     session_id : str
         UUID4 stored in BMADState["session_id"].
-    handler : CallbackHandler | None
-        Stored in BMADState["langfuse_handler"].
+    lf_context : dict | None
+        Stored in BMADState["langfuse_handler"].  agent_runner.run_agent()
+        passes this to log_langfuse_generation() after every LLM call.
         None if Langfuse keys are missing or the SDK is unavailable.
     """
-    global _langfuse_handler
-
     session_id = str(uuid.uuid4())
 
-    if not _ensure_env():
-        _langfuse_handler = None
+    lf = get_lf_client()
+    if lf is None:
         return session_id, None
 
     try:
-        # Langfuse v3: import path is langfuse.langchain (v2 alias removed)
-        try:
-            from langfuse.langchain import CallbackHandler  # type: ignore[import]
-        except ImportError:
-            from langfuse.callback import CallbackHandler  # type: ignore[import]  # v2 fallback
-
-        # Langfuse v3 removed session_id / trace_name constructor params.
-        # Session ID is now injected via the invoke() metadata dict instead
-        # (see main.py / streamlit_app.py: metadata={"langfuse_session_id": …})
-        handler = CallbackHandler()
-        _langfuse_handler = handler
-        print(f"[Langfuse] CallbackHandler ready (session {session_id[:8]}...)")
-        return session_id, handler
+        trace_id = str(lf.create_trace_id())
+        lf_context: dict[str, str] = {
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "trace_name": run_name,
+        }
+        print(f"[Langfuse] Session {session_id[:8]}… | trace {trace_id[:8]}…")
+        return session_id, lf_context
 
     except Exception as exc:
         warnings.warn(
-            f"Failed to create Langfuse CallbackHandler: {exc}. "
-            "Continuing without tracing.",
+            f"Failed to create Langfuse trace: {exc}. Continuing without tracing.",
             RuntimeWarning,
             stacklevel=2,
         )
-        _langfuse_handler = None
         return session_id, None
 
 
 # ---------------------------------------------------------------------------
-# Per-agent logging
+# Direct Langfuse generation logging  (called by agent_runner after each LLM call)
+# ---------------------------------------------------------------------------
+
+
+def log_langfuse_generation(
+    lf_ctx: Optional[dict[str, str]],
+    agent_name: str,
+    model: str,
+    messages: list[dict[str, str]],
+    output: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: float,
+) -> None:
+    """
+    Log one LLM call as a Langfuse generation using the 4.x SDK directly.
+
+    This fixes the 0-token problem: token counts are extracted from the
+    LiteLLM response and passed explicitly — no LiteLLM callback needed.
+
+    Parameters
+    ----------
+    lf_ctx      Dict returned by create_session(), or None to skip logging.
+    agent_name  Name shown in the Langfuse dashboard (e.g. "developer").
+    model       LiteLLM model string (e.g. "groq/llama-3.1-8b-instant").
+    messages    The messages list sent to the LLM.
+    output      The text content returned by the LLM.
+    input_tokens / output_tokens  Token counts from the LiteLLM response.
+    latency_ms  Wall-clock time for the LLM call in milliseconds.
+    """
+    if lf_ctx is None:
+        return
+
+    lf = get_lf_client()
+    if lf is None:
+        return
+
+    try:
+        # TraceContext tells Langfuse which trace this generation belongs to.
+        trace_context = {
+            "trace_id": lf_ctx["trace_id"],
+            "session_id": lf_ctx["session_id"],
+        }
+
+        gen = lf.start_observation(
+            trace_context=trace_context,       # type: ignore[arg-type]
+            name=agent_name,
+            as_type="generation",
+            model=model,
+            input=messages,
+            output=output,
+            usage_details={
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": input_tokens + output_tokens,
+            },
+            metadata={
+                "latency_ms": round(latency_ms, 1),
+                "session_id": lf_ctx["session_id"],
+                "trace_name": lf_ctx.get("trace_name", "BMAD Pipeline"),
+            },
+        )
+        gen.end()
+
+    except Exception as exc:
+        warnings.warn(
+            f"[Langfuse] Failed to log generation for '{agent_name}': {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-agent local logging
 # ---------------------------------------------------------------------------
 
 
@@ -285,23 +362,16 @@ def get_pipeline_summary(state: dict[str, Any]) -> PipelineSummary:
 
 def flush(handler: Optional[Any] = None) -> None:
     """
-    Flush all pending Langfuse events to the cloud.
-
-    Uses Langfuse() directly — the same pattern as the working reference
-    project — instead of going through the CallbackHandler, which has no
-    flush() method in Langfuse v3.
-
-    Safe to call even when Langfuse is unconfigured.
+    Flush all pending Langfuse events so they appear in the dashboard
+    before the process exits.  Safe to call even when Langfuse is unconfigured.
     """
-    global _langfuse_handler
+    lf = get_lf_client()
+    if lf is None:
+        return
 
     print("[Langfuse] Flushing...")
     try:
-        from langfuse import Langfuse  # type: ignore[import]
-        lf = Langfuse()
         lf.flush()
-        print("[Langfuse] Flush complete")
+        print("[Langfuse] Flush complete.")
     except Exception as exc:
         print(f"[Langfuse] Flush warning: {exc}")
-    finally:
-        _langfuse_handler = None

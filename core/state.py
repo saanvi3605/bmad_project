@@ -63,6 +63,10 @@ class BMADState(TypedDict):
     # ── EvalAgent fields ───────────────────────────────────────────────────
     eval_scores: Optional[dict]        # {dimension: {value, reason}} from evaluator.py
 
+    # ── Project mode ───────────────────────────────────────────────────────
+    project_mode: Optional[str]        # "streamlit_crud" | "fastapi_rag"
+    extra_files: Optional[dict]        # {filename: content} for multi-file RAG output
+
 
 # Backward-compatibility alias — keeps ``from state import AgentState`` working
 AgentState = BMADState

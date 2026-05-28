@@ -13,8 +13,11 @@ from agents_impl.test_writer_agent import (
     _strip_async_patterns,
     _fix_count_assertions,
     _extract_test_functions,
-    FIXTURE_BLOCK,
+    _build_fixture_block,
 )
+
+# Build a default fixture block (no schema) for assertions
+FIXTURE_BLOCK = _build_fixture_block([])
 
 
 class TestStripAsyncPatterns:
@@ -113,9 +116,10 @@ class TestFixtureBlock:
         assert "import sqlite3" in FIXTURE_BLOCK
         assert "import gc" in FIXTURE_BLOCK
 
-    def test_fixture_block_imports_from_generated_app(self):
-        # Streamlit apps have no ASGI 'app' object; the fixture imports init_db only
-        assert "from generated_app import init_db" in FIXTURE_BLOCK
+    def test_fixture_block_does_not_import_generated_app(self):
+        # Fixture is self-contained — no import from generated_app; schema built inline
+        assert "sqlite3.connect" in FIXTURE_BLOCK
+        assert "@pytest.fixture" in FIXTURE_BLOCK
 
     def test_fixture_block_uses_sqlite_connection(self):
         # Streamlit apps are tested via sqlite3.Connection, not an HTTP TestClient
@@ -123,5 +127,5 @@ class TestFixtureBlock:
         assert "@pytest.fixture" in FIXTURE_BLOCK
 
     def test_fixture_block_cleans_up_db(self):
-        assert "test_app.db" in FIXTURE_BLOCK
+        assert "test_library.db" in FIXTURE_BLOCK
         assert "os.remove" in FIXTURE_BLOCK

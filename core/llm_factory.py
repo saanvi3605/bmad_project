@@ -1,12 +1,16 @@
 """
 core/llm_factory.py
 ────────────────────────────────────────────────────────────────────────────────
-Responsible for ONE thing: creating and returning the single shared ChatGroq
-instance used by every LLM-calling agent in the pipeline.
+Responsible for ONE thing: building a LiteLLM-compatible config dict for every
+LLM-calling agent in the pipeline.
 
-build_llm() is NOT cached at the module level so imports do not trigger LLM
-instantiation.  agent_runner.py calls _get_llm() lazily on the first real
-invocation.  Tests can monkeypatch build_llm before any call occurs.
+build_llm() returns a plain dict:
+    {"model": "groq/llama-3.3-70b-versatile", "temperature": 0.1,
+     "max_tokens": 4096, "timeout": 120}
+
+agent_runner.py holds this dict as a lazy singleton and passes it to
+litellm.completion() on every invocation.  Tests can monkeypatch build_llm
+before any call occurs.
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -87,52 +91,63 @@ def get_llm_light_config() -> dict[str, Any]:
     return _load_config().get("llm_light") or _load_config()["llm"]
 
 
-def _build_from_config(cfg: dict[str, Any]) -> Any:
-    """Instantiate an LLM from a config dict. Supports providers: groq, gemini."""
+def _build_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return a LiteLLM-compatible config dict from a models.yaml section.
+
+    LiteLLM uses provider-prefixed model names:
+      groq   → "groq/<model>"
+      gemini → "gemini/<model>"
+
+    The returned dict is stored as the agent_runner singleton and passed
+    directly to litellm.completion() on every LLM call.
+    """
     load_dotenv()
     provider = cfg.get("provider", "groq")
+    model_name = cfg["model"]
 
-    if provider == "groq":
-        from langchain_groq import ChatGroq
-        api_key = os.getenv("GROQ_API_KEY", "")
-        if not api_key:
-            raise EnvironmentError("GROQ_API_KEY is not set in .env")
-        return ChatGroq(
-            groq_api_key=api_key,
-            model_name=cfg["model"],
-            temperature=cfg["temperature"],
-            max_tokens=cfg["max_tokens"],
-            model_kwargs={},
-            request_timeout=cfg.get("request_timeout", 120),
+    # Map provider → LiteLLM prefix
+    _PROVIDER_PREFIX: dict[str, str] = {
+        "groq": "groq",
+        "gemini": "gemini",
+        "openai": "openai",
+    }
+    prefix = _PROVIDER_PREFIX.get(provider)
+    if prefix is None:
+        raise ValueError(
+            f"Unknown LLM provider '{provider}'. "
+            f"Supported: {list(_PROVIDER_PREFIX)}"
         )
 
-    if provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        if not api_key:
-            raise EnvironmentError("GOOGLE_API_KEY is not set in .env")
-        return ChatGoogleGenerativeAI(
-            model=cfg["model"],
-            temperature=cfg["temperature"],
-            max_output_tokens=cfg["max_tokens"],
-            google_api_key=api_key,
-        )
+    # Don't double-prefix if the model already starts with a known provider prefix.
+    # Note: model names like "meta-llama/llama-4-scout-…" contain "/" but still
+    # need the provider prefix (→ "groq/meta-llama/llama-4-scout-…").
+    _KNOWN_PREFIXES = {f"{p}/" for p in _PROVIDER_PREFIX.values()}
+    if any(model_name.startswith(p) for p in _KNOWN_PREFIXES):
+        litellm_model = model_name  # already prefixed, e.g. "groq/llama-3.1-8b-instant"
+    else:
+        litellm_model = f"{prefix}/{model_name}"
 
-    raise ValueError(f"Unknown LLM provider '{provider}'. Supported: groq, gemini")
+    return {
+        "model": litellm_model,
+        "temperature": cfg["temperature"],
+        "max_tokens": cfg["max_tokens"],
+        "timeout": cfg.get("request_timeout", 120),
+    }
 
 
-def build_llm() -> Any:
-    """Build the heavy LLM (llm: section of models.yaml)."""
+def build_llm() -> dict[str, Any]:
+    """Return LiteLLM config dict for the heavy model (llm: section of models.yaml)."""
     return _build_from_config(get_llm_config())
 
 
-def build_llm_light() -> Any:
-    """Build the light LLM (llm_light: section, falls back to llm: if absent)."""
+def build_llm_light() -> dict[str, Any]:
+    """Return LiteLLM config dict for the light model (llm_light: section)."""
     return _build_from_config(get_llm_light_config())
 
 
-def build_llm_for_config(cfg: dict[str, Any]) -> Any:
-    """Build an LLM from an arbitrary config dict (used for complexity override models)."""
+def build_llm_for_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return a LiteLLM config dict from an arbitrary config dict (complexity override)."""
     return _build_from_config(cfg)
 
 
