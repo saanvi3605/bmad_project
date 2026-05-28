@@ -223,6 +223,9 @@ COMMON MISTAKES — every item below has broken generated RAG services before. D
 - NEVER use: from langchain.llms.anthropic import Anthropic
 - NEVER use: from langchain.chat_models import ChatAnthropic
 - NEVER use: from langchain.text_splitter import RecursiveCharacterTextSplitter
+- NEVER import LangfuseSpan — it does not exist in Langfuse v4
+- NEVER import LangfuseCallbackHandler from langfuse.langchain — it does not exist
+- The ONLY Langfuse import you need is: from langfuse import Langfuse
   That module no longer exists. Use an inline splitter instead:
     def _split_text(text: str, chunk_size: int = 512, chunk_overlap: int = 50) -> list[str]:
         chunks, start = [], 0

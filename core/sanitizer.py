@@ -431,6 +431,12 @@ def _fix_rag_imports(code: str) -> str:
         code,
     )
 
+    # ── Langfuse hallucinated symbols ─────────────────────────────────────────
+    # LangfuseSpan and LangfuseCallbackHandler don't exist in Langfuse v4
+    code = re.sub(r',?\s*LangfuseSpan\b', '', code)
+    code = re.sub(r'from langfuse\.langchain import\s+LangfuseCallbackHandler[^\n]*\n', '', code)
+    code = re.sub(r'from langfuse import([^\n]*),\s*LangfuseSpan', r'from langfuse import\1', code)
+
     # ── Langfuse v2 API calls (replaced in v4) ────────────────────────────────
     # lf.start_observation(...) → replaced with a comment so the validator
     # flags it and the developer agent rewrites properly on the fix cycle.
