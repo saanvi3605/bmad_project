@@ -31,6 +31,15 @@ STRIP_PREFIXES = (
     "import pymysql", "from pymysql",
     "import motor", "from motor",
     "import tortoise", "from tortoise",
+    # Vector databases — not allowed in Streamlit CRUD apps
+    "import chromadb", "from chromadb",
+    "import pinecone", "from pinecone",
+    "import weaviate", "from weaviate",
+    "import qdrant", "from qdrant",
+    # LLM orchestration frameworks — not needed in Streamlit CRUD apps
+    "import langchain", "from langchain",
+    "import llamaindex", "from llamaindex",
+    "from llama_index",
     # Template engines
     "import jinja2", "from jinja2",
     "from fastapi.templating",

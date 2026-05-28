@@ -33,6 +33,9 @@ DISALLOWED = [
     "from databases", "import asyncpg", "import psycopg2",
     "import fastapi", "from fastapi", "import uvicorn", "from uvicorn",
     "Jinja2Templates", "from jinja2",
+    "import chromadb", "from chromadb",
+    "import langchain", "from langchain",
+    "import pinecone", "from pinecone",
 ]
 
 
