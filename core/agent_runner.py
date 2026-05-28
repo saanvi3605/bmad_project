@@ -128,18 +128,41 @@ def reset_llm_singletons() -> None:
 _RATE_LIMIT_MAX_RETRIES = 5
 _RATE_LIMIT_FALLBACK_WAIT = 10.0  # seconds to wait when Groq doesn't tell us how long
 
+# If the suggested wait is longer than this we are hitting a daily/hourly quota,
+# not a per-minute burst limit.  There is no point retrying — fail fast.
+_RATE_LIMIT_DAILY_THRESHOLD_S = 120.0  # 2 minutes
+
 
 def _parse_retry_after(error_message: str) -> float:
     """
     Extract the suggested wait time from a Groq rate-limit error message.
 
-    Groq returns:  "Please try again in 4.189999999s."
-    Falls back to _RATE_LIMIT_FALLBACK_WAIT if the pattern isn't found.
+    Groq returns two formats:
+      Per-minute (TPM):  "Please try again in 4.19s."
+      Daily (TPD):       "Please try again in 52m46.56s."
+
+    Returns total seconds.  Falls back to _RATE_LIMIT_FALLBACK_WAIT if no
+    pattern is found.
     """
-    m = re.search(r'try again in ([\d.]+)s', error_message, re.IGNORECASE)
+    # "Xm Y.Zs" or "Xm Ys" (hours/daily limits)
+    m = re.search(r'try again in (?:(\d+)h\s*)?(?:(\d+)m\s*)?([\d.]+)s',
+                  error_message, re.IGNORECASE)
     if m:
-        return float(m.group(1)) + 2.0   # add 2s buffer
+        hours   = float(m.group(1) or 0)
+        minutes = float(m.group(2) or 0)
+        seconds = float(m.group(3) or 0)
+        return hours * 3600 + minutes * 60 + seconds + 2.0
     return _RATE_LIMIT_FALLBACK_WAIT
+
+
+def _is_daily_limit(error_message: str) -> bool:
+    """Return True if this is a per-day/hour quota error (not a short burst limit)."""
+    return (
+        "tokens per day" in error_message.lower()
+        or "per day" in error_message.lower()
+        or "tpd" in error_message.lower()
+        or _parse_retry_after(error_message) > _RATE_LIMIT_DAILY_THRESHOLD_S
+    )
 
 
 def _call_litellm(
@@ -180,11 +203,32 @@ def _call_litellm(
         try:
             return litellm.completion(**kwargs)
         except litellm.RateLimitError as exc:
+            err_str = str(exc)
+
+            # Daily / hourly quota — no point retrying, fail immediately
+            if _is_daily_limit(err_str):
+                wait_s = _parse_retry_after(err_str)
+                hours, rem = divmod(int(wait_s), 3600)
+                mins, secs  = divmod(rem, 60)
+                human = (
+                    f"{hours}h {mins}m {secs}s" if hours
+                    else f"{mins}m {secs}s" if mins
+                    else f"{secs}s"
+                )
+                print(
+                    f"\n  [LLM] DAILY TOKEN LIMIT reached on {model}.\n"
+                    f"  Reset in ~{human}.\n"
+                    f"  Fix: switch to a different model in config/models.yaml\n"
+                    f"       or wait for the daily quota to reset."
+                )
+                raise   # propagate immediately — no retries
+
+            # Per-minute burst limit — wait the suggested time and retry
             if attempt == _RATE_LIMIT_MAX_RETRIES:
                 raise   # exhausted all retries — propagate
-            wait = _parse_retry_after(str(exc))
+            wait = _parse_retry_after(err_str)
             print(
-                f"\n  [LLM] Rate limit hit on {model} "
+                f"\n  [LLM] Rate limit (TPM) hit on {model} "
                 f"(attempt {attempt}/{_RATE_LIMIT_MAX_RETRIES - 1}). "
                 f"Waiting {wait:.1f}s before retry..."
             )
