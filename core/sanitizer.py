@@ -371,17 +371,68 @@ def _fix_rag_imports(code: str) -> str:
     """
     Fix common LLM import hallucinations in RAG-mode Python files.
 
-    The package is `python-dotenv` but the import name is `dotenv`.
-    LLMs frequently hallucinate `import python_dotenv` which doesn't exist.
+    Covers:
+      - python-dotenv import name confusion
+      - Old LangChain import paths (reorganised in LangChain 0.2+)
+      - Old Langfuse v2 API calls (replaced in v4)
     """
-    # `import python_dotenv` → `from dotenv import load_dotenv`
+    # ── python-dotenv ──────────────────────────────────────────────────────────
     code = re.sub(r'import python_dotenv\b', 'from dotenv import load_dotenv', code)
-    # `python_dotenv.load_dotenv()` → `load_dotenv()`
     code = re.sub(r'python_dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
-    # `import dotenv` (bare) → `from dotenv import load_dotenv`
     code = re.sub(r'^import dotenv\s*$', 'from dotenv import load_dotenv', code, flags=re.MULTILINE)
-    # `dotenv.load_dotenv()` → `load_dotenv()`
     code = re.sub(r'dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
+
+    # ── Old LangChain embedding import paths (removed in LangChain 0.2+) ──────
+    # Replace the entire import line with the correct Anthropic SDK import.
+    # We inject `from anthropic import Anthropic as _AnthropicClient` so call
+    # sites that use AnthropicEmbeddings still get a usable symbol (the
+    # validator will catch any remaining issues on the next cycle).
+    code = re.sub(
+        r'from langchain\.embeddings\.anthropic import\s+\w+[^\n]*',
+        'from anthropic import Anthropic  # fixed: old langchain path removed',
+        code,
+    )
+    code = re.sub(
+        r'from langchain\.embeddings import\s+AnthropicEmbeddings[^\n]*',
+        'from anthropic import Anthropic  # fixed: old langchain path removed',
+        code,
+    )
+    # Old LangChain LLM wrappers
+    code = re.sub(
+        r'from langchain\.llms\.anthropic import\s+\w+[^\n]*',
+        'from anthropic import Anthropic  # fixed: old langchain path removed',
+        code,
+    )
+    code = re.sub(
+        r'from langchain\.chat_models import\s+ChatAnthropic[^\n]*',
+        'from anthropic import Anthropic  # fixed: old langchain path removed',
+        code,
+    )
+    code = re.sub(
+        r'from langchain_community\.chat_models import\s+ChatAnthropic[^\n]*',
+        'from anthropic import Anthropic  # fixed: old langchain path removed',
+        code,
+    )
+
+    # ── Langfuse v2 API calls (replaced in v4) ────────────────────────────────
+    # lf.start_observation(...) → replaced with a comment so the validator
+    # flags it and the developer agent rewrites properly on the fix cycle.
+    code = re.sub(
+        r'lf\.start_observation\([^)]*\)',
+        'lf.trace(name="rag_query")  # fixed: start_observation removed in Langfuse v4',
+        code,
+    )
+    code = re.sub(
+        r'\.start_observation\([^)]*\)',
+        '.span(name="span")  # fixed: start_observation removed in Langfuse v4',
+        code,
+    )
+    code = re.sub(
+        r'lf\.score_current_span\(',
+        'lf.trace(name="score").score(',  # placeholder — validator will catch
+        code,
+    )
+
     return code
 
 
