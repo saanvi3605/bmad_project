@@ -132,6 +132,24 @@ _RATE_LIMIT_FALLBACK_WAIT = 10.0  # seconds to wait when Groq doesn't tell us ho
 # not a per-minute burst limit.  There is no point retrying — fail fast.
 _RATE_LIMIT_DAILY_THRESHOLD_S = 120.0  # 2 minutes
 
+# Transient connection errors that should be retried with exponential back-off.
+# WinError 10054 = WSAECONNRESET (remote host forcibly closed the connection).
+# These are almost always recoverable within 1-2 retries.
+_CONNECTION_RESET_KEYWORDS = (
+    "10054",                          # WinError 10054 (Windows WSAECONNRESET)
+    "connection was forcibly closed",
+    "connection reset",
+    "connectionreset",
+    "remotedisconnected",
+    "broken pipe",
+    "econnreset",
+    "server disconnected",
+    "peer closed",
+    "ssl eof",
+)
+_CONNECTION_RESET_MAX_RETRIES = 3
+_CONNECTION_RESET_BASE_WAIT = 5.0  # seconds; doubles each retry
+
 
 def _parse_retry_after(error_message: str) -> float:
     """
@@ -199,9 +217,12 @@ def _call_litellm(
     if metadata:
         kwargs["metadata"] = metadata
 
+    conn_attempts = 0  # separate counter for connection-reset retries
+
     for attempt in range(1, _RATE_LIMIT_MAX_RETRIES + 1):
         try:
             return litellm.completion(**kwargs)
+
         except litellm.RateLimitError as exc:
             err_str = str(exc)
 
@@ -233,6 +254,33 @@ def _call_litellm(
                 f"Waiting {wait:.1f}s before retry..."
             )
             time.sleep(wait)
+
+        except litellm.InternalServerError as exc:
+            # WinError 10054 and other transient TCP resets arrive here.
+            # Only retry if the error message matches a known connection-reset
+            # pattern — genuine 500s (e.g. "model overloaded") are also caught
+            # by this branch and benefit from the same back-off.
+            err_str = str(exc).lower()
+            is_conn_reset = any(kw in err_str for kw in _CONNECTION_RESET_KEYWORDS)
+            conn_attempts += 1
+
+            if conn_attempts > _CONNECTION_RESET_MAX_RETRIES:
+                print(
+                    f"\n  [LLM] Connection error on {model} — "
+                    f"exhausted {_CONNECTION_RESET_MAX_RETRIES} retries. Giving up."
+                )
+                raise
+
+            wait = _CONNECTION_RESET_BASE_WAIT * (2 ** (conn_attempts - 1))  # 5, 10, 20 s
+            reason = "connection reset (WinError 10054)" if "10054" in str(exc) else "server error"
+            print(
+                f"\n  [LLM] Transient {reason} on {model} "
+                f"(retry {conn_attempts}/{_CONNECTION_RESET_MAX_RETRIES}). "
+                f"Waiting {wait:.0f}s before retry..."
+            )
+            time.sleep(wait)
+            # Don't increment the rate-limit attempt counter — this was a
+            # connection issue, not a rate-limit, so the budget resets.
 
 
 # ---------------------------------------------------------------------------

@@ -30,17 +30,20 @@ from typing import Any
 from core.llm_factory import get_executor_config, get_session_config
 
 
+_BIND_HOST = "127.0.0.1"  # 0.0.0.0 is blocked by Windows ACL on many machines
+
+
 def _find_free_port(preferred: int = 8502, scan_limit: int = 20) -> int:
-    """Return preferred port if free, otherwise the next available one."""
+    """Return preferred port if free on _BIND_HOST, otherwise the next available one."""
     for port in range(preferred, preferred + scan_limit):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                s.bind(("127.0.0.1", port))
+                s.bind((_BIND_HOST, port))
                 return port
             except OSError:
                 continue
-    return preferred  # fallback — Streamlit will show its own port error
+    return preferred  # fallback
 
 
 def executor_agent(state: dict[str, Any]) -> dict[str, Any]:
@@ -79,7 +82,7 @@ def _execute_streamlit(state: dict[str, Any]) -> dict[str, Any]:
 
     try:
         import sys
-        port = _find_free_port(8502)
+        port = _find_free_port(8503)  # 8502 conflicts with default Streamlit port
         process = subprocess.Popen(
             [sys.executable, "-m", "streamlit", "run", output_path,
              "--server.headless", "true", "--server.port", str(port)],
@@ -160,12 +163,15 @@ def _execute_rag(state: dict[str, Any]) -> dict[str, Any]:
 
     # ── Launch uvicorn ────────────────────────────────────────────────────
     startup_wait = int(get_executor_config().get("startup_wait_seconds", 8))
-    port = _find_free_port(8000)
+    port = _find_free_port(8001)  # 8000 often blocked on Windows dev machines
 
     try:
+        # --reload causes a two-process model on Windows that races to bind the
+        # same socket and triggers WinError 10013 (WSAEACCES).
+        # 0.0.0.0 is blocked by Windows ACL on many dev machines — use 127.0.0.1.
         process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "main:app",
-             "--host", "0.0.0.0", "--port", str(port), "--reload"],
+             "--host", _BIND_HOST, "--port", str(port)],
             cwd=rag_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,

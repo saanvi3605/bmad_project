@@ -51,12 +51,32 @@ STRIP_PREFIXES = (
 REQUIRED_IMPORTS = [
     "import os",
     "import sqlite3",
+    "import datetime",          # module form — lets LLM use datetime.datetime.now()
     "import streamlit as st",
     "import pandas as pd",
-    "from datetime import datetime",
     "from dotenv import load_dotenv",
     "load_dotenv()",
 ]
+
+# Injected only when the app contains st.file_uploader — adds markitdown
+# imports + the to_markdown() helper without touching apps that don't need it.
+_MARKITDOWN_BLOCK = '''
+from io import BytesIO
+from markitdown import MarkItDown
+
+_md = MarkItDown()
+
+
+def to_markdown(content_bytes: bytes, filename: str) -> str:
+    """Convert any uploaded file to Markdown text (PDF, DOCX, CSV, JSON, ...)."""
+    ext = os.path.splitext(filename)[1].lower() or ".txt"
+    try:
+        result = _md.convert_stream(BytesIO(content_bytes), file_extension=ext)
+        text = (result.text_content or "").strip()
+        return text if text else content_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return content_bytes.decode("utf-8", errors="replace")
+'''
 
 MINIMAL_INIT_DB = '''
 
@@ -204,6 +224,15 @@ def sanitize_code(code: str) -> str:
     # Inject init_db if missing
     if "def init_db" not in result:
         result = result.replace("load_dotenv()\n", "load_dotenv()\n" + MINIMAL_INIT_DB, 1)
+
+    # Inject markitdown imports + to_markdown() only when the app actually uses
+    # file upload.  Apps without st.file_uploader are left completely untouched.
+    if "st.file_uploader" in result and "def to_markdown" not in result:
+        marker = "init_db()\n"
+        if marker in result:
+            result = result.replace(marker, marker + _MARKITDOWN_BLOCK, 1)
+        else:
+            result = result.replace("load_dotenv()\n", "load_dotenv()\n" + _MARKITDOWN_BLOCK, 1)
 
     # Strip Jinja2 syntax
     result = re.sub(r"\{%.*?%\}", "", result)
@@ -367,6 +396,31 @@ def sanitize_rag_files(files: dict[str, str]) -> dict[str, str]:
     return sanitized
 
 
+_LANGFUSE_ALLOWED = {"Langfuse"}
+
+
+def _keep_only_langfuse_class(import_line: str) -> str:
+    """Strip hallucinated symbols from 'from langfuse import ...' lines.
+
+    Keeps only known-valid names (currently just ``Langfuse``).  If the entire
+    import collapses to nothing, returns a comment so the line isn't blank.
+
+    Examples
+    --------
+    "from langfuse import Langfuse, trace"   → "from langfuse import Langfuse"
+    "from langfuse import trace"             → "# from langfuse import trace  # removed — symbol does not exist"
+    """
+    # Extract everything after 'from langfuse import'
+    m = re.match(r'from langfuse import\s+(.*)', import_line)
+    if not m:
+        return import_line
+    symbols = [s.strip() for s in m.group(1).split(',')]
+    kept = [s for s in symbols if s in _LANGFUSE_ALLOWED]
+    if kept:
+        return f"from langfuse import {', '.join(kept)}"
+    return f"# removed: {import_line.strip()}  # symbol(s) do not exist in Langfuse v4"
+
+
 def _fix_rag_imports(code: str) -> str:
     """
     Fix common LLM import hallucinations in RAG-mode Python files.
@@ -375,7 +429,41 @@ def _fix_rag_imports(code: str) -> str:
       - python-dotenv import name confusion
       - Old LangChain import paths (reorganised in LangChain 0.2+)
       - Old Langfuse v2 API calls (replaced in v4)
+      - FastAPI CORSMiddleware wrong import location
+      - Langfuse hallucinated symbols (trace, LangfuseSpan, LangfuseTracer, etc.)
+      - Ensures markitdown to_markdown helper is present if file upload is used
     """
+    # ── markitdown: inject helper if file upload present but helper missing ──
+    if ("UploadFile" in code or "file_uploader" in code) and "def to_markdown" not in code:
+        if "from markitdown import" not in code:
+            code = "from markitdown import MarkItDown\nfrom io import BytesIO\n_md = MarkItDown()\n" + code
+        helper = '''
+def to_markdown(content_bytes: bytes, filename: str) -> str:
+    """Convert any uploaded file to Markdown text (PDF, DOCX, CSV, JSON, ...)."""
+    import os as _os
+    ext = _os.path.splitext(filename)[1].lower() or ".txt"
+    try:
+        result = _md.convert_stream(BytesIO(content_bytes), file_extension=ext)
+        text = (result.text_content or "").strip()
+        return text if text else content_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return content_bytes.decode("utf-8", errors="replace")
+
+'''
+        # Insert after the markitdown import block
+        code = re.sub(
+            r'(_md\s*=\s*MarkItDown\(\)\s*\n)',
+            r'\1' + helper,
+            code,
+            count=1,
+        )
+    # ── ChromaDB: remove hallucinated ChromaDB class import ───────────────────
+    # `chromadb` has no exportable `ChromaDB` class.  `import chromadb` then
+    # `chromadb.PersistentClient(...)` is the only valid usage pattern.
+    code = re.sub(r'from chromadb import\s+ChromaDB[^\n]*\n', '', code)
+    # Also strip variants like `from chromadb import chromadb` (seen in the wild)
+    code = re.sub(r'from chromadb import\s+chromadb[^\n]*\n', '', code)
+
     # ── python-dotenv ──────────────────────────────────────────────────────────
     code = re.sub(r'import python_dotenv\b', 'from dotenv import load_dotenv', code)
     code = re.sub(r'python_dotenv\.load_dotenv\(\)', 'load_dotenv()', code)
@@ -431,28 +519,92 @@ def _fix_rag_imports(code: str) -> str:
         code,
     )
 
+    # ── FastAPI: CORSMiddleware must come from fastapi.middleware.cors ──────────
+    # Pattern 1: CORSMiddleware is the first item in the from-fastapi import
+    code = re.sub(
+        r'from fastapi import\s+CORSMiddleware\s*,\s*',
+        'from fastapi.middleware.cors import CORSMiddleware\nfrom fastapi import ',
+        code,
+    )
+    # Pattern 2: CORSMiddleware is NOT the first item (it's in the middle/end)
+    code = re.sub(
+        r'(from fastapi import\s+[^\n]*),\s*CORSMiddleware\b',
+        r'\1\nfrom fastapi.middleware.cors import CORSMiddleware',
+        code,
+    )
+
+    # ── Langfuse: strip hallucinated `trace` symbol from top-level import ─────
+    # "from langfuse import Langfuse, trace" → "from langfuse import Langfuse"
+    code = re.sub(
+        r'from langfuse import(\s+[A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)',
+        lambda m: _keep_only_langfuse_class(m.group(0)),
+        code,
+    )
+
+    # ── Langfuse: remove entire lines for known non-existent sub-modules ──────
+    code = re.sub(r'from langfuse\.langchain import\s+LangfuseTracer[^\n]*\n', '', code)
+
     # ── Langfuse hallucinated symbols ─────────────────────────────────────────
     # LangfuseSpan and LangfuseCallbackHandler don't exist in Langfuse v4
     code = re.sub(r',?\s*LangfuseSpan\b', '', code)
     code = re.sub(r'from langfuse\.langchain import\s+LangfuseCallbackHandler[^\n]*\n', '', code)
     code = re.sub(r'from langfuse import([^\n]*),\s*LangfuseSpan', r'from langfuse import\1', code)
 
-    # ── Langfuse v2 API calls (replaced in v4) ────────────────────────────────
-    # lf.start_observation(...) → replaced with a comment so the validator
-    # flags it and the developer agent rewrites properly on the fix cycle.
+    # ── Langfuse hallucinated/wrong API calls ─────────────────────────────────
+    # lf.trace() does NOT exist in Langfuse 4.x — replace with start_observation.
+    # (lf.start_observation() IS the correct API, so do NOT touch it.)
     code = re.sub(
-        r'lf\.start_observation\([^)]*\)',
-        'lf.trace(name="rag_query")  # fixed: start_observation removed in Langfuse v4',
+        r'\blf\.trace\s*\(',
+        'lf.start_observation(as_type="span", ',
+        code,
+    )
+    # trace.span(...) → trace.start_observation(as_type="span", ...)
+    code = re.sub(
+        r'\btrace\.span\s*\(',
+        'trace.start_observation(as_type="span", ',
+        code,
+    )
+    # span.end(output=...) → span.update(output=...); span.end()  [end() has no output= param]
+    code = re.sub(
+        r'(\w+_span)\.end\(output=(\{[^}]*\})\)',
+        r'\1.update(output=\2); \1.end()',
+        code,
+    )
+    # trace.score(...) → trace.score_trace(...)
+    code = re.sub(
+        r'\btrace\.score\s*\(',
+        'trace.score_trace(',
+        code,
+    )
+    # lf.start_observation / trace.start_observation: strip session_id= kwarg
+    # (start_observation has no session_id parameter; pass as metadata instead)
+    code = re.sub(
+        r'((?:lf|trace)\.start_observation\([^)]*?),\s*session_id\s*=\s*[^,)]+',
+        r'\1',
         code,
     )
     code = re.sub(
-        r'\.start_observation\([^)]*\)',
-        '.span(name="span")  # fixed: start_observation removed in Langfuse v4',
+        r'((?:lf|trace)\.start_observation\()\s*session_id\s*=\s*[^,)]+,?\s*',
+        r'\1',
         code,
     )
+
+    # ── ChromaDB: wrong query parameter ───────────────────────────────────────
+    # include_documents=True does not exist — use include=[...]
     code = re.sub(
-        r'lf\.score_current_span\(',
-        'lf.trace(name="score").score(',  # placeholder — validator will catch
+        r',?\s*include_documents\s*=\s*True',
+        ', include=["documents", "metadatas", "distances"]',
+        code,
+    )
+
+    # ── Anthropic client has no .embeddings attribute ─────────────────────────
+    # client.embeddings.create(model="voyage-3", input=[text]).embeddings[0]
+    # → _hash_embed(text)   (will be overridden at runtime if voyageai is present)
+    # We replace the entire call expression with a hash fallback so the code at
+    # least runs; the developer prompt and reviewer now teach get_embeddings().
+    code = re.sub(
+        r'(?:client|client_anthropic|anthropic_client)\s*\.\s*embeddings\s*\.\s*create\s*\([^)]*\)\s*\.\s*embeddings\s*\[\s*0\s*\]',
+        '_hash_embed(text)',  # conservative fallback
         code,
     )
 

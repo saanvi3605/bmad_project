@@ -75,15 +75,25 @@ APPROVED: YES or NO
 ### 2. Criteria Checklist
 | # | Criterion | Status | Notes |
 |---|-----------|--------|-------|
-| 1 | SYNTAX: Valid executable Python, no SyntaxErrors | PASS/FAIL | |
+| 1 | SYNTAX: Valid executable Python, no SyntaxErrors or NameErrors | PASS/FAIL | |
 | 2 | FRAMEWORK: FastAPI + uvicorn — no Streamlit, no Flask | PASS/FAIL | |
 | 3 | VECTOR DB: ChromaDB used for embeddings storage | PASS/FAIL | |
 | 4 | ENDPOINTS: /health, /ingest, /query, /metrics all present | PASS/FAIL | |
 | 5 | PYDANTIC: QueryRequest, QueryResponse, Citation, IngestResponse models defined | PASS/FAIL | |
-| 6 | CORS: CORSMiddleware with allow_origins=["*"] configured | PASS/FAIL | |
-| 7 | TRACING: Langfuse trace created per /query call with child spans | PASS/FAIL | |
-| 8 | IMPORTS: Uses `from dotenv import load_dotenv` (NOT `import python_dotenv`) | PASS/FAIL | |
-| 9 | COMPLETENESS: No stub functions, no TODOs, no placeholder comments | PASS/FAIL | |
+| 6 | CORS: CORSMiddleware imported from fastapi.middleware.cors (NOT from fastapi directly) | PASS/FAIL | |
+| 7 | TRACING: Langfuse 4.x API used — lf.start_observation(), span.start_observation(), span.update(), span.end(), trace.score_trace(), lf.flush() | PASS/FAIL | |
+| 8 | SPLITTER: Uses an inline _split_text() function — NOT RecursiveCharacterTextSplitter | PASS/FAIL | |
+| 9 | BANNED IMPORTS ABSENT: None of the following appear anywhere in the code: | PASS/FAIL | |
+|   |   - from langchain.text_splitter import ...  (removed in LangChain 0.2+) | | |
+|   |   - from langchain.embeddings.anthropic import ...  (removed in LangChain 0.2+) | | |
+|   |   - from langfuse.langchain import ...  (does not exist in Langfuse v4) | | |
+|   |   - from fastapi import CORSMiddleware  (wrong — must be from fastapi.middleware.cors) | | |
+|   |   - from chromadb import ChromaDB  (ChromaDB class does not exist — use `import chromadb`) | | |
+|   |   - client.embeddings.create(...)  (Anthropic SDK has no embeddings API — use voyageai) | | |
+|   |   - lf.trace(...)  (does not exist in Langfuse 4.x — use lf.start_observation()) | | |
+|   |   - trace.span(...)  (does not exist in Langfuse 4.x — use trace.start_observation()) | | |
+|   |   - span.end(output=...)  (end() has no output= param — use span.update(output=...) then span.end()) | | |
+|   |   - trace.score(...)  (does not exist — use trace.score_trace()) | | |
 
 ### 3. Issues Found
 [If APPROVED: YES — write "None". If NO — list each issue:]
@@ -92,7 +102,16 @@ APPROVED: YES or NO
 ### 4. Recommended Fixes
 [If APPROVED: YES — write "None". If NO — bullet list of exact code changes needed]
 
-RULES:
+CRITICAL RULES FOR REVIEWERS:
+- NEVER suggest adding `from langchain.text_splitter import RecursiveCharacterTextSplitter` — this module
+  was removed in LangChain 0.2+. The correct pattern is an inline _split_text() function.
+- NEVER suggest adding `from langchain.embeddings.anthropic import AnthropicEmbeddings` — use Anthropic SDK directly.
+- NEVER suggest adding `from langfuse.langchain import ...` — Langfuse v4 has no langchain submodule.
+- CORSMiddleware MUST come from `from fastapi.middleware.cors import CORSMiddleware`.
+- NEVER suggest `lf.trace()` or `trace.span()` — those methods do not exist in Langfuse 4.x.
+  The correct API is `lf.start_observation()` / `trace.start_observation()` / `span.update()` / `span.end()` / `trace.score_trace()`.
+- NEVER suggest `from chromadb import ChromaDB` — the class does not exist. Only `import chromadb` is valid.
+- NEVER suggest `client.embeddings.create(...)` — the Anthropic SDK has no embeddings endpoint. Use voyageai.
 - The first line of your response after the template MUST be "APPROVED: YES" or "APPROVED: NO"
 - Be specific: cite line numbers or function names, not vague descriptions
 """

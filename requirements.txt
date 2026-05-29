@@ -19,6 +19,7 @@ python-dotenv>=1.0.0
 
 # ── Config / utilities ────────────────────────────────────────────────────────
 pyyaml>=6.0.0
+filelock>=3.12.0
 
 # ── Code style (applied by sanitizer to every generated app) ─────────────────
 black>=24.0.0
@@ -34,6 +35,9 @@ groq>=0.5.0
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 mcp>=1.0.0
+
+# ── File → Markdown conversion (used by both Streamlit and FastAPI apps) ──────
+markitdown[all]>=0.1.0
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=7.0.0

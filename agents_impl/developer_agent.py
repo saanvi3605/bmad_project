@@ -100,9 +100,53 @@ COMMON MISTAKES — every item below has broken generated apps before. Do NOT re
 - To show feedback buttons (👍/👎) after a form submission, store the conversation/record id in
   st.session_state inside the if submitted: block, then read it OUTSIDE the form for rendering.
 
-## Completeness
-- Never leave placeholder implementations like "return 'This is a placeholder answer'" or
-  "pass  # TODO". Every function must contain real, working logic.
+## File → Markdown conversion (required whenever the app accepts file uploads)
+- ALWAYS convert every uploaded file to Markdown text using markitdown BEFORE chunking or storing it.
+  This handles PDF, DOCX, XLSX, PPTX, CSV, JSON, YAML, HTML, TXT, MD in one consistent call.
+- Import and instantiate ONCE at module level:
+    from markitdown import MarkItDown
+    from io import BytesIO
+    _md = MarkItDown()
+- Define this helper (copy it verbatim):
+    def to_markdown(content_bytes: bytes, filename: str) -> str:
+        ext = os.path.splitext(filename)[1].lower() or ".txt"
+        try:
+            result = _md.convert_stream(BytesIO(content_bytes), file_extension=ext)
+            text = (result.text_content or "").strip()
+            return text if text else content_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return content_bytes.decode("utf-8", errors="replace")
+- In every ingest/upload handler, call it like this:
+    content_bytes = uploaded_file.read()          # Streamlit UploadedFile
+    markdown_text = to_markdown(content_bytes, uploaded_file.name)
+    # then chunk markdown_text and store chunks
+- NEVER call .read().decode("utf-8") directly on uploaded files — always go through to_markdown().
+
+## Groq SDK message format
+- Every message dict MUST have BOTH "role" AND "content" keys. Missing "role" raises a
+  ValidationError at runtime and is the most common Groq bug:
+    WRONG: messages=[{{"content": question}}]                    # no role → crash
+    RIGHT: messages=[{{"role": "user", "content": question}}]   # correct
+- When building a system + user message pair:
+    messages=[
+        {{"role": "system", "content": "You are a helpful assistant."}},
+        {{"role": "user",   "content": question}},
+    ]
+
+## Completeness — no stubs, no empty functions
+- Every function body must contain real working logic — NOT any of:
+    - `pass` alone (with or without a comment)
+    - `return []`  — unless the spec says the list can be empty
+    - `return None` — unless the function truly returns nothing
+    - `return 1.0` or `return 0` — placeholder scores are useless
+    - `# TODO`, `# placeholder`, `# implement this`, `raise NotImplementedError`
+- init_db() MUST actually call sqlite3.connect() and CREATE TABLE IF NOT EXISTS —
+  never write `def init_db(): pass`.
+- retrieve_top_chunks() MUST run a real SQL SELECT query against the chunks table —
+  never return an empty list.
+- Any similarity search function must implement real logic (keyword LIKE search,
+  full-text search, cosine similarity, or BM25) — returning [] makes the whole
+  RAG pipeline silently broken.
 - If an LLM call is part of the design, implement it fully using the Groq SDK:
     from groq import Groq
     client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
@@ -139,10 +183,14 @@ Use ### FILE: <filename> ### before EVERY file. Generate ALL four files.
 <environment variable template>
 
 RULES FOR main.py (ALL mandatory):
-- Import: fastapi, chromadb, langchain, anthropic, langfuse, pydantic, dotenv
+- Imports must include:
+    from fastapi import FastAPI, File, HTTPException, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware   ← NEVER from fastapi import CORSMiddleware
+    from langfuse import Langfuse                        ← ONLY this; never import trace/LangfuseSpan/LangfuseTracer
+    from anthropic import Anthropic
 - ChromaDB: client = chromadb.PersistentClient(path="./chroma_db") at module level
 - collection = client.get_or_create_collection("documents", metadata={{"hnsw:space":"cosine"}})
-- Langfuse: lf = Langfuse() at module level; create trace per /query call
+- Langfuse: lf = Langfuse() at module level; create ONE trace per /query call using lf.trace(...)
 - CORS: app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 ENDPOINTS:
@@ -154,13 +202,13 @@ ENDPOINTS:
    - Store in ChromaDB with metadata: {{"filename": ..., "chunk_index": ..., "timestamp": ...}}
    - Return {{"status": "ok", "chunks_added": N, "filename": ...}}
 3. POST /query → body: {{"question": str, "top_k": int = 5}}
-   - Create Langfuse trace: lf.start_observation(name="rag_query", as_type="span", ...)
-   - Child span "embedding": embed the question
-   - Child span "retrieval": collection.query(query_embeddings=..., n_results=top_k)
+   - Create Langfuse trace: trace = lf.trace(name="rag_query", session_id=str(uuid.uuid4()))
+   - Child span "embedding": embed the question  → span = trace.span(name="embedding"); span.end(...)
+   - Child span "retrieval": collection.query(query_embeddings=[vec], n_results=top_k)
    - Child span "prompt_build": assemble context + question into prompt
-   - Child span "llm_call": anthropic client.messages.create(model="claude-3-5-sonnet-20241022", ...)
-   - Child span "evaluation": score faithfulness (1-10) with a second LLM call
-   - End trace; push faithfulness score to Langfuse
+   - Child span "llm_call": anthropic client.messages.create(model="claude-3-5-sonnet-20241022", max_tokens=1024, ...)
+   - Child span "evaluation": score faithfulness (1-10) with a second LLM call; parse int from text
+   - trace.score(name="faithfulness", value=float(score)); lf.flush()
    - Return {{"answer": str, "citations": [{{"filename": str, "snippet": str, "score": float}}], "latency_ms": float, "faithfulness": float}}
 4. GET /metrics → {{"total_docs": N, "total_chunks": N, "avg_query_latency_ms": float, "last_ingested": str}}
 
@@ -171,22 +219,41 @@ PYDANTIC MODELS required:
 - IngestResponse(status: str, chunks_added: int, filename: str)
 
 EMBEDDING STRATEGY:
-- Try Anthropic voyage-3 first: client.embeddings.create(model="voyage-3", input=[text])
-- Fallback: use a simple deterministic hash-based 384-dim float vector so the app works without voyage API access
+- The Anthropic SDK has NO .embeddings attribute — do NOT call client.embeddings.create(...)
+- Use the voyageai package for embeddings, with a hash-based fallback:
+    def get_embeddings(text: str) -> list[float]:
+        try:
+            import voyageai
+            vo = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
+            return vo.embed([text], model="voyage-3").embeddings[0]
+        except Exception:
+            return _hash_embed(text)   # always works without any API key
 
-LANGFUSE TRACING (Langfuse v4 SDK — use EXACTLY this API):
+LANGFUSE TRACING (Langfuse 4.x SDK — use EXACTLY this API, verified against 4.6.1):
 - lf = Langfuse() once at module level
-- Per /query call:
-    trace = lf.trace(name="rag_query", session_id=str(uuid.uuid4()))
-    emb_span   = trace.span(name="embedding");   emb_span.end(output={{"dims": len(vec)}})
-    ret_span   = trace.span(name="retrieval");   ret_span.end(output={{"n": top_k}})
-    build_span = trace.span(name="prompt_build"); build_span.end()
-    llm_span   = trace.span(name="llm_call");    llm_span.end(output={{"answer": answer[:100]}})
-    eval_span  = trace.span(name="evaluation");  eval_span.end(output={{"faithfulness": score}})
-    trace.score(name="faithfulness", value=float(score))
+- lf.trace() does NOT exist — use lf.start_observation() to create the root span
+- span.end() does NOT accept output= — call span.update(output=...) before span.end()
+- Child spans use span.start_observation(), NOT lf.trace().span()
+- Per /query call (copy this pattern exactly):
+    trace = lf.start_observation(name="rag_query", as_type="span")
+    emb_span = trace.start_observation(name="embedding", as_type="span")
+    # ... do embedding ...
+    emb_span.update(output={{"dims": len(vec)}}); emb_span.end()
+    ret_span = trace.start_observation(name="retrieval", as_type="span")
+    # ... do retrieval ...
+    ret_span.update(output={{"n": top_k}}); ret_span.end()
+    build_span = trace.start_observation(name="prompt_build", as_type="span")
+    # ... build prompt ...
+    build_span.end()
+    llm_span = trace.start_observation(name="llm_call", as_type="span")
+    # ... call LLM ...
+    llm_span.update(output={{"answer": answer[:100]}}); llm_span.end()
+    eval_span = trace.start_observation(name="evaluation", as_type="span")
+    # ... evaluate ...
+    eval_span.update(output={{"faithfulness": score}}); eval_span.end()
+    trace.score_trace(name="faithfulness", value=float(score))
+    trace.end()
     lf.flush()
-- NEVER use lf.start_observation() — that method does not exist in Langfuse v4
-- NEVER use lf.score_current_span() — use trace.score() instead
 - Import uuid at the top for session IDs
 
 RULES FOR requirements.txt:
@@ -218,6 +285,14 @@ RULES FOR .env.example:
 
 COMMON MISTAKES — every item below has broken generated RAG services before. Do NOT repeat them:
 
+## FastAPI: CORSMiddleware must come from fastapi.middleware.cors
+- WRONG:  from fastapi import CORSMiddleware, FastAPI, ...
+- RIGHT:
+    from fastapi import FastAPI, File, HTTPException, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
+- CORSMiddleware has NEVER been exported from the top-level `fastapi` package.
+  Importing it from there raises ImportError at startup.
+
 ## LangChain import paths (these changed in LangChain 0.2+)
 - NEVER use: from langchain.embeddings.anthropic import AnthropicEmbeddings
 - NEVER use: from langchain.llms.anthropic import Anthropic
@@ -243,21 +318,26 @@ COMMON MISTAKES — every item below has broken generated RAG services before. D
 - For embeddings use the voyageai package or the hash-based fallback — never AnthropicEmbeddings
 
 ## Anthropic client usage
-- The Anthropic() object itself has no .messages — call client.messages.create(), NOT llm.messages.create()
+- The Anthropic SDK has NO embeddings API — `client.embeddings.create(...)` raises AttributeError.
+  Use voyageai for embeddings (see EMBEDDING STRATEGY above).
+- Variable name: use `anthropic_client` or `client`, NEVER `llm` (that suggests the wrong pattern)
 - WRONG:  llm = Anthropic(); response = llm.messages.create(...)
 - RIGHT:  client = Anthropic(); response = client.messages.create(...)
 - resp.content[0].text is the answer string — NOT resp.choices[0].message.content (that's OpenAI)
 
-## Langfuse v4 API — lf.start_observation() does not exist
-- WRONG (v2 API, completely broken in v4):
-    root_span = lf.start_observation(name="rag_query", as_type="span", ...)
-    child = root_span.start_observation(name="embedding", as_type="span")
-    lf.score_current_span(name="faithfulness", value=score)
-- RIGHT (v4 API):
-    trace = lf.trace(name="rag_query", session_id=session_id)
-    span  = trace.span(name="embedding")
+## Langfuse 4.x API — lf.trace() and trace.span() do NOT exist
+- WRONG (these methods do not exist in Langfuse 4.x):
+    trace = lf.trace(name="rag_query", session_id=session_id)   # AttributeError
+    span  = trace.span(name="embedding")                         # AttributeError
+    span.end(output={{...}})                                     # end() has no output= param
+    trace.score(name="faithfulness", value=score)                # AttributeError
+- RIGHT (Langfuse 4.6.1 verified):
+    trace = lf.start_observation(name="rag_query", as_type="span")
+    span  = trace.start_observation(name="embedding", as_type="span")
+    span.update(output={{...}})
     span.end()
-    trace.score(name="faithfulness", value=float(score))
+    trace.score_trace(name="faithfulness", value=float(score))
+    trace.end()
     lf.flush()
 
 ## QueryRequest must not reference fields that don't exist
@@ -265,12 +345,22 @@ COMMON MISTAKES — every item below has broken generated RAG services before. D
 - NEVER access request.session_id — it is not in the model
 - Generate a session_id inside the endpoint: session_id = str(uuid.uuid4())
 
-## ChromaDB — always store document text, not just metadata
+## ChromaDB — correct import, storage, and query API
+- NEVER do `from chromadb import ChromaDB` — the class `ChromaDB` does not exist.
+  The only valid import is `import chromadb`, then `chromadb.PersistentClient(...)`.
 - WRONG (stores metadata only — retrieval returns no readable text):
     collection.add(ids=[...], embeddings=[...], metadatas=[...])
 - RIGHT (stores the actual chunk text so it can be returned in citations):
-    collection.add(ids=[...], embeddings=[...], documents=[chunk_text], metadatas=[...])
-- When querying, include_documents=True is the default; results["documents"][0] is the list of texts
+    collection.upsert(ids=[f"{{filename}}-{{i}}"], embeddings=[emb], documents=[chunk], metadatas=[{{...}}])
+  Use upsert (not add) so re-ingesting a file doesn't raise DuplicateIDError.
+- IDs must be unique across all documents — use f"{{filename}}-{{chunk_index}}", NEVER str(i).
+- When querying, `include_documents=True` does NOT exist — use:
+    results = collection.query(
+        query_embeddings=[vec],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
+  Then access results["documents"][0], results["metadatas"][0], results["distances"][0].
 
 ## Citations must contain readable snippet text, not integers
 - results["metadatas"][0] is a list of dicts; results["documents"][0] is a list of strings
@@ -285,13 +375,32 @@ COMMON MISTAKES — every item below has broken generated RAG services before. D
     faithfulness = float(m.group()) / 10.0 if m else 0.5
 - NEVER pass the response object directly to int() or float()
 
-## File reading in FastAPI sync endpoints
-- file.read() returns a coroutine in async context; in sync endpoints use file.file.read():
-    contents = file.file.read()          # sync endpoint
-    contents = await file.read()         # async endpoint (def query → async def query)
-- For PDF: pass the file object to PdfReader, not the raw bytes decoded as utf-8:
+## File → Markdown conversion (REQUIRED in /ingest — use markitdown, nothing else)
+- Convert EVERY uploaded file to Markdown text with markitdown before chunking.
+  This handles PDF, DOCX, XLSX, PPTX, CSV, JSON, YAML, HTML, TXT in ONE call.
+- Import and instantiate at module level:
+    from markitdown import MarkItDown
     from io import BytesIO
-    reader = PdfReader(BytesIO(contents))
+    _md = MarkItDown()
+- Define this helper:
+    def to_markdown(content_bytes: bytes, filename: str) -> str:
+        ext = os.path.splitext(filename)[1].lower() or ".txt"
+        try:
+            result = _md.convert_stream(BytesIO(content_bytes), file_extension=ext)
+            text = (result.text_content or "").strip()
+            return text if text else content_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return content_bytes.decode("utf-8", errors="replace")
+- In /ingest, replace any .decode("utf-8") call with:
+    contents = await file.read()
+    text = to_markdown(contents, file.filename)
+    chunks = _split_text(text)
+- NEVER use PyPDF2, pdfminer, pypdf, python-docx, or any other format-specific library.
+  markitdown handles all of them internally.
+
+## File reading in FastAPI async endpoints
+- Always use `await file.read()` in `async def` endpoints (the /ingest endpoint must be async).
+- Do NOT use file.file.read() — that is only needed in sync endpoints which we never generate.
 
 ## Hash-based embedding fallback must produce valid float vectors
 - Python's hash() returns a large integer — ChromaDB needs floats in a consistent range

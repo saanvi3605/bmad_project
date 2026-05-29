@@ -406,7 +406,11 @@ def _find_free_port(preferred: int = 8503, scan_limit: int = 20) -> int:
 
 # ── Pipeline History DB ───────────────────────────────────────────────────────
 
-_HISTORY_DB = str(pathlib.Path(__file__).parent / "pipeline_history.db")
+_HISTORY_DB    = str(pathlib.Path(__file__).parent / "pipeline_history.db")
+
+# ── Agent Loop control file paths ─────────────────────────────────────────────
+_CONTROL_FILE  = pathlib.Path(__file__).parent / "control.yaml"
+_CONTROL_LOCK  = pathlib.Path(__file__).parent / "control.yaml.lock"
 
 
 def init_history_db() -> None:
@@ -487,6 +491,34 @@ def save_run_to_history(
         conn.commit()
         conn.close()
         load_history.clear()
+    except Exception:
+        pass
+
+
+def _read_control_yaml() -> dict:
+    """Read control.yaml; return defaults if missing or corrupt."""
+    defaults = {
+        "run": False, "prompt": "", "project_mode": "auto",
+        "status": "idle", "last_run": None, "last_result": None, "last_prompt": "",
+    }
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(_CONTROL_FILE.read_text(encoding="utf-8")) or {}
+        return {**defaults, **data}
+    except Exception:
+        return defaults
+
+
+def _write_control_yaml(data: dict) -> None:
+    """Write control.yaml under a file lock (best-effort)."""
+    try:
+        import yaml as _yaml
+        from filelock import FileLock, Timeout
+        with FileLock(str(_CONTROL_LOCK), timeout=5):
+            _CONTROL_FILE.write_text(
+                _yaml.dump(data, default_flow_style=False, allow_unicode=True),
+                encoding="utf-8",
+            )
     except Exception:
         pass
 
@@ -798,6 +830,91 @@ def _render_sidebar():
                 unsafe_allow_html=True,
             )
 
+        # ── 🔄 Agent Loop ─────────────────────────────────────────────────
+        st.markdown(
+            '<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0"/>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#6366F1;'
+            'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem">'
+            '🔄 Agent Loop</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Read current loop state
+        ctrl = _read_control_yaml()
+        loop_status  = ctrl.get("status", "idle")
+        loop_run     = bool(ctrl.get("run", False))
+        loop_result  = (ctrl.get("last_result") or "")[:110]
+        loop_prompt_ = (ctrl.get("last_prompt") or "")[:55]
+        loop_last_run = ctrl.get("last_run") or ""
+        eff_status   = "running" if loop_run else loop_status
+
+        # Status badge
+        _badge_map = {
+            "idle":     ("💤", "#64748B", "rgba(100,116,139,0.12)"),
+            "running":  ("⏳", "#D97706", "rgba(217,119,6,0.12)"),
+            "complete": ("✅", "#059669", "rgba(5,150,105,0.12)"),
+            "failed":   ("❌", "#DC2626", "rgba(220,38,38,0.12)"),
+        }
+        _icon, _fc, _bg = _badge_map.get(eff_status, _badge_map["idle"])
+        ts_line = (
+            f'<br><span style="font-size:0.65rem;opacity:0.75">{loop_last_run}</span>'
+            if loop_last_run else ""
+        )
+        st.markdown(
+            f'<div style="background:{_bg};border-radius:8px;'
+            f'padding:0.45rem 0.75rem;margin-bottom:0.5rem">'
+            f'<span style="color:{_fc};font-weight:700;font-size:0.8rem">'
+            f'{_icon} {eff_status.upper()}</span>{ts_line}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if loop_prompt_:
+            st.caption(
+                f"Last prompt: _{loop_prompt_}{'…' if len(ctrl.get('last_prompt',''))>55 else ''}_"
+            )
+        if loop_result and eff_status != "idle":
+            st.caption(
+                f"Result: {loop_result}{'…' if len(ctrl.get('last_result',''))>110 else ''}"
+            )
+
+        # Trigger form
+        _trigger_disabled = loop_run or eff_status == "running"
+        with st.form("agent_loop_trigger_form", clear_on_submit=True):
+            _loop_prompt_in = st.text_input(
+                "Prompt",
+                placeholder="Build a recipe manager app…",
+                disabled=_trigger_disabled,
+                label_visibility="collapsed",
+            )
+            _loop_mode_in = st.selectbox(
+                "Mode",
+                options=["auto", "streamlit_crud", "fastapi_rag"],
+                format_func=lambda m: {"auto":"🔀 Auto-detect","streamlit_crud":"🖥️ Streamlit CRUD","fastapi_rag":"🔍 FastAPI RAG"}[m],
+                disabled=_trigger_disabled,
+                label_visibility="collapsed",
+            )
+            _submit = st.form_submit_button(
+                "Waiting for loop…" if _trigger_disabled else "🚀 Trigger Pipeline",
+                disabled=_trigger_disabled,
+                use_container_width=True,
+            )
+
+        if _submit and _loop_prompt_in.strip():
+            ctrl["run"]          = True
+            ctrl["prompt"]       = _loop_prompt_in.strip()
+            ctrl["project_mode"] = _loop_mode_in
+            ctrl["last_result"]  = "Pending…"
+            _write_control_yaml(ctrl)
+            st.rerun()
+
+        st.caption("Run `python agent_loop.py` in a terminal to start the watcher.")
+
+        # Store flag so the bottom of the page can auto-refresh while loop runs
+        st.session_state["_loop_needs_refresh"] = _trigger_disabled
+
 
 # ── Langfuse URL helpers ──────────────────────────────────────────────────────
 
@@ -1067,15 +1184,13 @@ def _render_results(final_state: dict):
             app_file = "outputs/generated_app.py"
             proc = st.session_state.get("app_process")
             app_running = proc is not None and proc.poll() is None
+            _mode = final_state.get("project_mode", "streamlit_crud") if final_state else st.session_state.get("project_mode", "streamlit_crud")
 
             if app_running:
                 port = st.session_state["app_port"]
-                st.link_button(
-                    "🌐 Open Generated App",
-                    f"http://localhost:{port}",
-                    use_container_width=True,
-                    type="primary",
-                )
+                open_label = "🌐 Open Generated App" if _mode == "streamlit_crud" else "🌐 Open API Docs"
+                open_url = f"http://localhost:{port}" if _mode == "streamlit_crud" else f"http://localhost:{port}/docs"
+                st.link_button(open_label, open_url, use_container_width=True, type="primary")
                 if st.button("⏹ Stop App", use_container_width=True):
                     proc.terminate()
                     try:
@@ -1087,8 +1202,9 @@ def _render_results(final_state: dict):
                     st.rerun()
             else:
                 can_launch = pathlib.Path(app_file).exists()
+                launch_label = "🚀 Launch Generated App" if _mode == "streamlit_crud" else "🚀 Launch FastAPI Server"
                 if st.button(
-                    "🚀 Launch Generated App",
+                    launch_label,
                     use_container_width=True,
                     type="primary",
                     disabled=not can_launch,
@@ -1099,21 +1215,38 @@ def _render_results(final_state: dict):
                             proc.wait(timeout=3)
                         except Exception:
                             pass
-                    port = _find_free_port(8503)
                     child_env = {
                         k: v for k, v in __import__("os").environ.items()
                         if not k.startswith("STREAMLIT_")
                     }
-                    new_proc = subprocess.Popen(
-                        [sys.executable, "-m", "streamlit", "run", app_file,
-                         "--server.headless", "true", "--server.port", str(port),
-                         "--server.address", "localhost"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        env=child_env,
-                    )
-                    time.sleep(9)
+                    if _mode == "fastapi_rag":
+                        # FastAPI: launch with uvicorn on a free port
+                        port = _find_free_port(8000)
+                        new_proc = subprocess.Popen(
+                            [sys.executable, "-m", "uvicorn",
+                             "outputs.generated_app:app",
+                             "--host", "0.0.0.0",
+                             "--port", str(port)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            env=child_env,
+                        )
+                        time.sleep(4)
+                    else:
+                        # Streamlit CRUD: launch with streamlit run
+                        port = _find_free_port(8503)
+                        new_proc = subprocess.Popen(
+                            [sys.executable, "-m", "streamlit", "run", app_file,
+                             "--server.headless", "true",
+                             "--server.port", str(port),
+                             "--server.address", "localhost"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            env=child_env,
+                        )
+                        time.sleep(9)
                     if new_proc.poll() is None:
                         st.session_state["app_process"] = new_proc
                         st.session_state["app_port"] = port
@@ -1526,3 +1659,13 @@ elif not st.session_state["running"] and not st.session_state["error"]:
         """,
         unsafe_allow_html=True,
     )
+
+# ── Agent loop auto-refresh ───────────────────────────────────────────────────
+# If the agent loop is actively running (or a run is queued) AND the main
+# pipeline is idle, poll every 3 seconds so the sidebar badge updates.
+if (
+    st.session_state.get("_loop_needs_refresh")
+    and not st.session_state["running"]
+):
+    time.sleep(3)
+    st.rerun()

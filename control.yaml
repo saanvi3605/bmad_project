@@ -1,0 +1,16 @@
+# BMAD Agent Loop — Shared Control File
+# ────────────────────────────────────────
+# To trigger a run:
+#   python trigger_run.py "Build a task tracker" --item "story-1-1"
+#   OR set run: true manually and fill in prompt
+
+run: false
+prompt: ''
+project_mode: auto
+sprint_item: ''
+status: complete
+iteration: 1
+last_run: '2026-05-29 15:03:10'
+last_result: 'Pipeline completed. Output: outputs/generated_app.py'
+last_prompt: Build a notepad
+last_error: null

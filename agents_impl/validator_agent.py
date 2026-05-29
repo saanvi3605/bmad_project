@@ -88,9 +88,22 @@ def validate_code(code: str) -> tuple[bool, str]:
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 defined.add(node.name)
 
-        KNOWN_BUILTINS = {"int", "str", "float", "bool", "list", "dict", "set",
-                          "None", "True", "False", "Optional", "List", "Dict", "Any",
-                          "tuple", "Tuple", "Union", "datetime"}
+        KNOWN_BUILTINS = {
+            # Python built-in types
+            "int", "str", "float", "bool", "bytes", "bytearray", "memoryview",
+            "list", "dict", "set", "frozenset", "tuple", "type", "object",
+            "complex", "range", "slice",
+            # Typing constructs
+            "Optional", "List", "Dict", "Set", "Tuple", "Any", "Union",
+            "Callable", "Iterator", "Generator", "Sequence", "Mapping",
+            "Type", "ClassVar", "Final", "Literal", "TypeVar",
+            # Sentinels / constants
+            "None", "True", "False", "NotImplemented", "Ellipsis",
+            # Datetime
+            "datetime", "date", "time", "timedelta",
+            # Common exception types (used in type annotations occasionally)
+            "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+        }
         errors = []
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -120,13 +133,21 @@ def validate_code(code: str) -> tuple[bool, str]:
                 f"Jinja2 syntax '{pat}' found. Do not use Jinja2 — use Streamlit widgets only."
             )
 
-    # --- Check 7: st.set_page_config is first Streamlit call ---
-    streamlit_calls = [line.strip() for line in code.split("\n")
-                       if line.strip().startswith("st.") and not line.strip().startswith("st.cache")]
-    if streamlit_calls and not streamlit_calls[0].startswith("st.set_page_config"):
+    # --- Check 7: st.set_page_config is first Streamlit call at module level ---
+    # Only scan non-indented lines — function/class bodies are indented and
+    # calling st.rerun() or st.error() inside a helper defined before
+    # st.set_page_config() is perfectly valid.
+    module_level_st_calls = [
+        line.strip() for line in code.split("\n")
+        if not line.startswith((" ", "\t"))   # column-0 = module-level statement
+        and line.strip().startswith("st.")
+        and not line.strip().startswith("st.cache")
+    ]
+    if module_level_st_calls and not module_level_st_calls[0].startswith("st.set_page_config"):
         return False, (
-            f"st.set_page_config() must be the FIRST Streamlit call. "
-            f"Found '{streamlit_calls[0]}' before it."
+            f"st.set_page_config() must be the FIRST Streamlit call at module level. "
+            f"Found '{module_level_st_calls[0]}' before it. "
+            f"Move st.set_page_config() above all other top-level st.xxx calls."
         )
 
     # --- Check 8: init_db() is called at module level ---
@@ -134,10 +155,44 @@ def validate_code(code: str) -> tuple[bool, str]:
         return False, "init_db() is defined but never called at module level. Add init_db() after the function definition."
 
     # --- Check 9: No stub/placeholder implementations ---
-    stub_patterns = ["pass  # TODO", "# TODO:", "raise NotImplementedError", "pass  # implement"]
+    stub_patterns = [
+        "pass  # TODO", "# TODO:", "raise NotImplementedError", "pass  # implement",
+        "# placeholder", "# implement this", "pass  # stub",
+    ]
     found_stubs = [p for p in stub_patterns if p in code]
     if found_stubs:
-        return False, f"Incomplete implementation found: {found_stubs[0]}. All functions must be fully implemented."
+        return False, f"Incomplete implementation found: {found_stubs[0]!r}. All functions must be fully implemented."
+
+    # --- Check 9b: Empty function bodies (sole `pass` or trivial returns) ---
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = node.body
+            # Strip docstrings
+            real_stmts = [s for s in body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+            if not real_stmts:
+                continue
+            # Single-statement body
+            if len(real_stmts) == 1:
+                stmt = real_stmts[0]
+                # def f(): pass
+                if isinstance(stmt, ast.Pass):
+                    return False, (
+                        f"Function '{node.name}' has an empty body (`pass`). "
+                        f"All functions must contain real working logic."
+                    )
+                # def f(): return []
+                if (isinstance(stmt, ast.Return) and stmt.value is not None
+                        and isinstance(stmt.value, (ast.List, ast.Tuple))
+                        and len(stmt.value.elts) == 0):
+                    return False, (
+                        f"Function '{node.name}' returns an empty list/tuple as its only statement. "
+                        f"Implement real logic (e.g. a SQL query) rather than returning a stub value."
+                    )
+    except Exception:
+        pass
 
     # --- Check 10: st.cache_data.clear() called after writes ---
     has_write = any(kw in code for kw in ["INSERT INTO", "UPDATE ", "DELETE FROM"])
