@@ -6,49 +6,57 @@ A production-grade AI pipeline that generates complete, runnable **Streamlit + S
 
 ## How It Works
 
-A 9-agent LangGraph pipeline where each agent has one job:
+The pipeline scores the prompt first, then routes it:
 
 ```
-PromptRefiner → Planner → Architect → Developer → Validator
-                                                      │
-                                  ┌── pass ──────────┘
-                                  ↓
-                               Tester → Reviewer
-                                           │
-                              ┌── approved ┘
-                              ↓
-                           Executor → TestWriter → END
+ComplexityScorer
+    ├── score ≤ 4 → SimpleGenerator (A2A) ──────────────────────────┐
+    └── score > 4 → PromptRefiner → Planner → Architect → Developer │
+                                                              │       │
+                                              Validator ←────┘       │
+                                                  │                   │
+                                               Tester → Reviewer      │
+                                                             │         │
+                                                          Executor ←──┘
+                                                             │
+                                            TestWriter → ReadmeWriter → EvalAgent → END
 ```
+
+**Three feedback loops:**
+- Validator → Developer (static analysis, max 2 retries)
+- Reviewer → Developer (LLM quality check, max 2 retries)
+- Executor → Developer (runtime crash self-healing, max 2 retries)
 
 | Agent | Role | Model |
 |---|---|---|
-| **PromptRefiner** | Rewrites vague prompts into structured specs | Heavy (70b) |
-| **Planner** | Writes functional specification | Heavy (70b) |
+| **ComplexityScorer** | Scores prompt 1-10, routes to A2A or full pipeline | Light (8b) |
+| **SimpleGenerator** | Calls the A2A microservice for simple prompts | — |
+| **PromptRefiner** | Expands vague prompts into structured specs | Light (8b) |
+| **Planner** | Writes functional specification | Light (8b) |
 | **Architect** | Designs schema, forms, business logic | Heavy (70b) |
 | **Developer** | Generates the full Streamlit app | Heavy (70b) |
-| **Validator** | 10 deterministic static checks — no LLM | — |
-| **Tester** | Writes TC-XX test case specifications | Light (8b) |
-| **Reviewer** | Reviews code against 12 quality criteria | Heavy (70b) |
-| **Executor** | Launches the app as a subprocess to verify it starts | — |
+| **Validator** | Deterministic static checks — no LLM | — |
+| **Tester** | Writes test case specifications | Light (8b) |
+| **Reviewer** | Reviews code against quality criteria | Heavy (70b) |
+| **Executor** | Launches the app subprocess; sends crashes back to Developer | — |
 | **TestWriter** | Generates a runnable pytest file | Light (8b) |
-
-**Two feedback loops** keep quality high:
-- Validator → Developer (max 2 retries on static failures)
-- Reviewer → Developer (max 2 retries on quality failures)
+| **ReadmeWriter** | Generates a README for the produced app | Light (8b) |
+| **EvalAgent** | Scores the final output on multiple dimensions | Heavy (70b) |
 
 ---
 
 ## Features
 
 - **Natural language to working app** — describe it, get a fully runnable Streamlit app
-- **Dual-model strategy** — heavy model (llama-3.3-70b) for planning and coding, light model (llama-3.1-8b) for test generation — two separate token quotas
-- **10-check validator** — AST parse, py_compile, required patterns, disallowed libraries, NameError detection, Jinja2 detection, form checks, cache checks, stub detection, and more
-- **Auto-sanitizer** — fixes common LLM mistakes: spaces in SQL table names, wrong `format=` strings, deprecated Streamlit APIs, disallowed imports
-- **Pipeline History tab** — every run saved to SQLite with full artifacts, one-click re-run of any past prompt
-- **Quick Launch buttons** — launch the generated app on a free port and open it in a new tab, or run pytest inline
-- **Langfuse observability** — per-agent token counts, cost estimates, latency tracking, grouped traces per pipeline run
-- **Session archiving** — every run's output saved to `outputs/sessions/{uuid}/`
-- **Config-driven** — swap models, adjust retry limits, change timeouts — all in `config/models.yaml`, no code changes
+- **A2A routing** — simple prompts (score ≤ 4) are routed to a separate microservice; complex prompts run the full pipeline
+- **Dual-model strategy** — heavy model (llama-3.3-70b) for planning and coding, light model (llama-3.1-8b) for lighter tasks
+- **Self-healing executor** — if the generated app crashes, stderr is sent back to Developer for up to 2 automatic fixes
+- **Deterministic validator** — AST parse, py_compile, required patterns, disallowed libraries, NameError detection, and more
+- **Auto-sanitizer** — fixes common LLM mistakes: wrong imports, deprecated APIs, SQL naming issues
+- **Langfuse observability** — per-agent token counts, cost estimates, latency, and grouped traces per run
+- **MCP server** — exposes Langfuse analytics as tools inside Claude Code (`get_usage_summary`, `get_daily_trends`, `get_recent_traces`, `ask_langfuse`)
+- **Pipeline History tab** — every run saved with full artifacts, one-click re-run of any past prompt
+- **Config-driven** — swap models, adjust retry limits, change timeouts — all in `config/models.yaml`
 
 ---
 
@@ -56,33 +64,34 @@ PromptRefiner → Planner → Architect → Developer → Validator
 
 ```
 project_bmad/
-├── streamlit_app.py          # Main UI — non-blocking, threading + queue
+├── streamlit_app.py          # Main UI
 ├── main.py                   # CLI entrypoint
-├── workflow.py               # Compat shim → orchestration/graph.py
-├── state.py                  # Compat shim → core/state.py
+├── langfuse_mcp.py           # Custom MCP server — Langfuse analytics tools
+├── .mcp.json                 # MCP server registration for Claude Code
 │
 ├── core/
-│   ├── llm_factory.py        # Lazy LLM singleton, config-driven
-│   ├── agent_runner.py       # Single run_agent() entry point for all LLM calls
-│   ├── sanitizer.py          # sanitize_code() — auto-fixes LLM output
+│   ├── llm_factory.py        # LLM singleton, config-driven
+│   ├── agent_runner.py       # Single entry point for all LLM calls
+│   ├── sanitizer.py          # Auto-fixes LLM output
 │   ├── observability.py      # Langfuse tracing, token/cost tracking
-│   └── state.py              # BMADState TypedDict (19 fields)
+│   └── state.py              # BMADState TypedDict
 │
-├── agents_impl/              # 9 agent implementations
-├── agents/                   # BMAD agent definition docs (.md)
-├── skills/                   # BMAD skill definitions (.yaml)
-├── templates/                # Output structure templates (.xml)
+├── agents_impl/              # All agent implementations
+│   ├── complexity_scorer_agent.py
+│   ├── a2a_client.py         # SimpleGenerator — calls project_final_final
+│   ├── developer_agent.py    # Handles clean / validation_fix / review_fix modes
+│   ├── validator_agent.py
+│   └── ...
 │
 ├── config/
-│   ├── models.yaml           # LLM, retry limits, executor, cost coefficients
-│   ├── workflow.yaml         # Graph topology documentation
+│   ├── models.yaml           # LLM config, retry limits, A2A threshold
 │   └── pipeline_rules.yaml   # Constraints appended to every prompt
 │
 ├── orchestration/
-│   └── graph.py              # LangGraph StateGraph — 9 nodes, 2 feedback loops
+│   └── graph.py              # LangGraph StateGraph
 │
-├── tests/                    # Unit tests for sanitizer, validator, graph, agents
-└── outputs/                  # Generated apps and session archives
+├── tests/
+└── outputs/
 ```
 
 ---
@@ -95,7 +104,6 @@ project_bmad/
 git clone https://github.com/saanvi3605/bmad_project
 cd bmad_project
 pip install -r requirements.txt
-pip install plotly apscheduler  # for generated apps that use charts/scheduling
 ```
 
 ### 2. Set up environment
@@ -109,73 +117,72 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
-Get your Groq API key free at [console.groq.com](https://console.groq.com).  
 Langfuse keys are optional — observability is disabled gracefully if absent.
 
-### 3. Run the pipeline UI
+### 3. Run
 
 ```bash
-python -m streamlit run streamlit_app.py
-```
+# Streamlit UI
+streamlit run streamlit_app.py
 
-### 4. Or run from CLI
-
-```bash
+# CLI
 python main.py "Build a task tracker with add, delete, and list tasks"
 ```
+
+### 4. A2A microservice (optional)
+
+To enable A2A routing for simple prompts, start the microservice first:
+
+```bash
+cd path/to/project_final_final
+python service.py        # runs on localhost:8001
+```
+
+Then run the main pipeline as normal — prompts scoring ≤ 4 will automatically route to it.
 
 ---
 
 ## Example Prompts
 
-**Simple**
+**Simple** (routes to A2A)
 ```
-Build a personal expense tracker. Add expenses with amount, category and note.
-Show monthly summary with total spent per category and a pie chart.
-```
-
-**Medium**
-```
-Build a job application tracker. Log jobs with company, role, date, status
-(Applied/Interview/Offer/Rejected) and notes. Show a status board and analytics.
+Show the current date and time
 ```
 
-**Complex**
+**Medium** (full pipeline)
 ```
-Build a restaurant order management system. Menu items have name, category,
-price, and availability. Customers place orders with multiple items. Track
-order status (Pending/Preparing/Ready/Delivered). Show live kitchen dashboard,
-revenue by category, busiest hours chart, and average order value.
+Build a job application tracker. Log jobs with company, role, date, and status.
+Show a status board and analytics.
+```
+
+**Complex** (full pipeline)
+```
+Build a restaurant order management system with menu management, order tracking,
+a live kitchen dashboard, and revenue analytics.
 ```
 
 ---
 
 ## Configuration
 
-All runtime behaviour is controlled by `config/models.yaml` — no code changes needed:
+All runtime behaviour is controlled by `config/models.yaml`:
 
 ```yaml
 llm:
-  provider: groq
   model: llama-3.3-70b-versatile   # heavy agents
-  temperature: 0.1
-  max_tokens: 4096
 
 llm_light:
-  provider: groq
-  model: llama-3.1-8b-instant      # light agents (tester, test_writer)
-  max_tokens: 2048
+  model: llama-3.1-8b-instant      # light agents
 
 retry_limits:
   validator_max_retries: 2
   reviewer_max_retries: 2
+  executor_max_retries: 2
 
-executor:
-  startup_wait_seconds: 8
-  output_file: outputs/generated_app.py
+complexity_scorer:
+  a2a_threshold: 4     # prompts scoring ≤ this go to A2A
+  simple_threshold: 4  # prompts scoring ≤ this use the light model
 ```
-
-Supported providers: `groq`, `gemini` (set `provider:` and add the corresponding API key to `.env`).
 
 ---
 
@@ -185,25 +192,7 @@ Supported providers: `groq`, `gemini` (set `provider:` and add the corresponding
 pytest tests/ -v
 ```
 
-Tests cover the sanitizer, validator, graph topology, agent runner lazy initialization, and test writer post-processing. All tests run without a real API key via monkeypatching.
-
----
-
-## Generated App
-
-After a pipeline run, the generated app lives at `outputs/generated_app.py`. Run it with:
-
-```bash
-streamlit run outputs/generated_app.py
-```
-
-Or use the **Launch Generated App** button in the pipeline UI — it starts the app on a free port and opens it in a new browser tab automatically.
-
-Run the generated tests with:
-
-```bash
-pytest outputs/test_generated_app.py -v
-```
+All tests run without a real API key via monkeypatching.
 
 ---
 
@@ -212,11 +201,12 @@ pytest outputs/test_generated_app.py -v
 | Layer | Technology |
 |---|---|
 | Pipeline orchestration | LangGraph |
-| LLM provider | Groq (llama-3.3-70b-versatile / llama-3.1-8b-instant) |
+| LLM provider | Groq (llama-3.3-70b / llama-3.1-8b) |
 | LLM integration | LangChain |
 | Observability | Langfuse |
+| MCP server | FastMCP (mcp library) |
+| A2A communication | FastAPI + requests |
 | Pipeline UI | Streamlit |
-| Generated apps | Streamlit + SQLite (sqlite3) |
-| Charts in generated apps | Plotly Express |
+| Generated apps | Streamlit + SQLite |
 | Config | YAML |
 | Tests | pytest |
