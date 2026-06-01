@@ -1,7 +1,7 @@
 # Agent: Orchestrator
 
 **Role:** Pipeline Choreography Agent  
-**Module:** `agent_loop.py`  
+**Module:** `agents_impl/orchestrator_agent.py`  
 **LLM:** No (deterministic polling loop)  
 **Skills:** `pipeline_trigger` (see `skills/pipeline_trigger.yaml`)
 
@@ -26,7 +26,7 @@ This agent does NOT use an LLM. It is a deterministic polling loop that:
 | Pattern | How it works | Used where |
 |---|---|---|
 | **Orchestration** | Central controller calls agents in order | LangGraph StateGraph (`orchestration/graph.py`) |
-| **Choreography** | Agents watch shared state and self-trigger | This agent (`agent_loop.py`) |
+| **Choreography** | Agents watch shared state and self-trigger | This agent (`agents_impl/orchestrator_agent.py`) |
 
 The Orchestrator agent is the choreography layer — it sits outside the LangGraph pipeline
 and decides *when* to run it, not *how*.
@@ -59,13 +59,13 @@ and decides *when* to run it, not *how*.
 
 ```bash
 # Start the orchestrator (runs continuously)
-python agent_loop.py
+python agents_impl/orchestrator_agent.py
 
 # Run a single check-and-execute cycle then exit
-python agent_loop.py --once
+python agents_impl/orchestrator_agent.py --once
 ```
 
 Trigger a run using the `pipeline_trigger` skill:
 ```bash
-python trigger_run.py "Build a recipe manager app"
+python agents_impl/trigger_skill.py "Build a recipe manager app"
 ```

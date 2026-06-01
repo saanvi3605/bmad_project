@@ -1,6 +1,11 @@
 """
-agent_loop.py — BMAD Choreography Polling Loop
+agents_impl/orchestrator_agent.py
 ────────────────────────────────────────────────────────────────────────────────
+BMAD Choreography Polling Loop — Orchestrator Agent
+
+Agent definition : agents/orchestrator.md
+Skill definition : skills/pipeline_trigger.yaml
+
 Implements the "agent loop" choreography pattern:
 
   Every POLL_INTERVAL seconds:
@@ -16,8 +21,8 @@ The control.yaml file is the "event bus".  Nobody calls this loop directly —
 it watches shared state and self-triggers.  That's choreography.
 
 Usage:
-    python agent_loop.py            # starts watching (Ctrl+C to stop)
-    python agent_loop.py --once     # run one check-and-execute cycle then exit
+    python agents_impl/orchestrator_agent.py            # starts watching (Ctrl+C to stop)
+    python agents_impl/orchestrator_agent.py --once     # run one check-and-execute cycle then exit
 """
 
 from __future__ import annotations
@@ -34,8 +39,8 @@ from filelock import FileLock, Timeout
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 POLL_INTERVAL   = 10          # seconds between "is run=true?" checks
-CONTROL_FILE    = Path(__file__).parent / "control.yaml"
-LOCK_FILE       = Path(__file__).parent / "control.yaml.lock"
+CONTROL_FILE    = Path(__file__).parent.parent / "control.yaml"
+LOCK_FILE       = Path(__file__).parent.parent / "control.yaml.lock"
 LOCK_TIMEOUT    = 5           # seconds to wait for the file lock
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -100,18 +105,42 @@ def _run_pipeline(prompt: str, project_mode: str) -> tuple[bool, str]:
     (success: bool, result_message: str)
     """
     try:
-        # Import here so the loop starts fast even if some deps are slow
-        from main import run as bmad_run           # reuses main.py's run() function
+        from main import run as bmad_run
         bmad_run(prompt, project_mode=project_mode)
         return True, f"Pipeline completed. Output: outputs/generated_app.py"
     except Exception as exc:
         tb = traceback.format_exc()
         short = str(exc)[:300]
-        print(f"\n[{_ts()}] ❌ Pipeline error:\n{tb}\n")   # full traceback
+        print(f"\n[{_ts()}] ❌ Pipeline error:\n{tb}\n")
         return False, f"Error: {short}"
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
+# ── Main agent function ───────────────────────────────────────────────────────
+
+def orchestrator_agent(once: bool = False) -> None:
+    """
+    Main entry point for the Orchestrator agent.
+    Runs forever unless once=True (single check-and-execute cycle).
+    """
+    print(f"\n{'='*62}")
+    print(f"  BMAD Orchestrator Agent — Choreography Polling Pattern")
+    print(f"{'='*62}")
+    print(f"  Watching: {CONTROL_FILE}")
+    print(f"  Interval: {POLL_INTERVAL}s   |   Mode: {'single-shot' if once else 'continuous'}")
+    print(f"  Trigger:  python agents_impl/trigger_skill.py \"<your prompt>\"")
+    print(f"  Stop:     Ctrl+C")
+    print(f"{'='*62}\n")
+
+    try:
+        while True:
+            _tick()
+            if once:
+                break
+            time.sleep(POLL_INTERVAL)
+    except KeyboardInterrupt:
+        print(f"\n[{_ts()}] Orchestrator agent stopped.")
+        _set_fields(status="idle")
+
 
 def _tick() -> None:
     """One polling cycle: read, decide, act."""
@@ -128,9 +157,8 @@ def _tick() -> None:
             last_ago = f" | Last run: {last_run}"
 
     if not data.get("run"):
-        # ── Idle heartbeat ───────────────────────────────────────────────────
         iteration = data.get("iteration", 0)
-        print(f"[{_ts()}] Iteration {iteration} | Status: {status}{last_ago} | Waiting for run=true in control.yaml …")
+        print(f"[{_ts()}] Iteration {iteration} | Status: {status}{last_ago} | Waiting for run=true …")
         return
 
     # ── Run triggered ────────────────────────────────────────────────────────
@@ -154,7 +182,6 @@ def _tick() -> None:
         print(f"[{_ts()}]     Sprint:  {sprint_item}")
     print(f"[{_ts()}] {'='*58}")
 
-    # ── Step a: flip run=false BEFORE starting (prevents double-triggers) ────
     _set_fields(
         run=False,
         status="running",
@@ -186,28 +213,6 @@ def _tick() -> None:
     print(f"[{_ts()}] Watching for next trigger …\n")
 
 
-def loop(once: bool = False) -> None:
-    """Main entry point. Runs forever unless once=True."""
-    print(f"\n{'='*62}")
-    print(f"  BMAD Agent Loop — Choreography Polling Pattern")
-    print(f"{'='*62}")
-    print(f"  Watching: {CONTROL_FILE}")
-    print(f"  Interval: {POLL_INTERVAL}s   |   Mode: {'single-shot' if once else 'continuous'}")
-    print(f"  Trigger:  python trigger_run.py \"<your prompt>\"")
-    print(f"  Stop:     Ctrl+C")
-    print(f"{'='*62}\n")
-
-    try:
-        while True:
-            _tick()
-            if once:
-                break
-            time.sleep(POLL_INTERVAL)
-    except KeyboardInterrupt:
-        print(f"\n[{_ts()}] Loop stopped by user.")
-        _set_fields(status="idle")
-
-
 if __name__ == "__main__":
     once = "--once" in sys.argv
-    loop(once=once)
+    orchestrator_agent(once=once)

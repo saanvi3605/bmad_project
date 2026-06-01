@@ -910,7 +910,7 @@ def _render_sidebar():
             _write_control_yaml(ctrl)
             st.rerun()
 
-        st.caption("Run `python agent_loop.py` in a terminal to start the watcher.")
+        st.caption("Run `python agents_impl/orchestrator_agent.py` in a terminal to start the watcher.")
 
         # Store flag so the bottom of the page can auto-refresh while loop runs
         st.session_state["_loop_needs_refresh"] = _trigger_disabled

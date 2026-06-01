@@ -1,10 +1,15 @@
 """
-trigger_run.py — CLI helper to trigger an agent loop run.
-──────────────────────────────────────────────────────────
+agents_impl/trigger_skill.py
+────────────────────────────────────────────────────────────────────────────────
+BMAD Pipeline Trigger Skill — CLI helper to trigger an Orchestrator agent run.
+
+Skill definition : skills/pipeline_trigger.yaml
+Agent            : agents_impl/orchestrator_agent.py
+
 Usage:
-    python trigger_run.py "Build a task tracker with add/delete/list"
-    python trigger_run.py "Build a task tracker" --mode fastapi_rag
-    python trigger_run.py --status          # just show current status
+    python agents_impl/trigger_skill.py "Build a task tracker with add/delete/list"
+    python agents_impl/trigger_skill.py "Build a RAG service for PDFs" --mode fastapi_rag
+    python agents_impl/trigger_skill.py --status
 """
 
 from __future__ import annotations
@@ -17,8 +22,8 @@ from datetime import datetime
 import yaml
 from filelock import FileLock, Timeout
 
-CONTROL_FILE = Path(__file__).parent / "control.yaml"
-LOCK_FILE    = Path(__file__).parent / "control.yaml.lock"
+CONTROL_FILE = Path(__file__).parent.parent / "control.yaml"
+LOCK_FILE    = Path(__file__).parent.parent / "control.yaml.lock"
 LOCK_TIMEOUT = 5
 
 
@@ -48,17 +53,17 @@ def _write(data: dict) -> None:
 
 def show_status() -> None:
     data = _read()
-    status     = data.get("status", "idle")
-    last_run   = data.get("last_run") or "never"
+    status      = data.get("status", "idle")
+    last_run    = data.get("last_run") or "never"
     last_prompt = (data.get("last_prompt") or "")[:80]
     last_result = (data.get("last_result") or "")[:120]
-    run_flag   = data.get("run", False)
+    run_flag    = data.get("run", False)
 
     icon = {"idle": "[idle]", "running": "[running]", "complete": "[complete]", "failed": "[failed]"}.get(status, "[?]")
 
     sep = "-" * 54
     print(f"\n{sep}")
-    print(f"  BMAD Agent Loop -- Status")
+    print(f"  BMAD Orchestrator Agent — Status")
     print(sep)
     print(f"  Status     : {icon}")
     print(f"  run flag   : {run_flag}")
@@ -73,6 +78,7 @@ def show_status() -> None:
 
 
 def trigger(prompt: str, project_mode: str, sprint_item: str = "") -> None:
+    """Write a run request to control.yaml (the event bus)."""
     data = _read()
 
     if data.get("run"):
@@ -97,42 +103,38 @@ def trigger(prompt: str, project_mode: str, sprint_item: str = "") -> None:
     print(f"   Mode        : {project_mode}")
     if sprint_item:
         print(f"   Sprint item : {sprint_item}")
-    print(f"   The agent loop will pick this up within 10 seconds.")
-    print(f"   Watch:  python agent_loop.py")
-    print(f"   Status: python trigger_run.py --status\n")
+    print(f"   The orchestrator agent will pick this up within 10 seconds.")
+    print(f"   Watch:  python agents_impl/orchestrator_agent.py")
+    print(f"   Status: python agents_impl/trigger_skill.py --status\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Trigger the BMAD agent loop from the command line.",
+        description="Trigger the BMAD Orchestrator agent from the command line.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python trigger_run.py "Build a recipe manager app"
-  python trigger_run.py "Build a RAG service for PDFs" --mode fastapi_rag
-  python trigger_run.py --status
+  python agents_impl/trigger_skill.py "Build a recipe manager app"
+  python agents_impl/trigger_skill.py "Build a RAG service for PDFs" --mode fastapi_rag
+  python agents_impl/trigger_skill.py --status
         """,
     )
-    parser.add_argument(
-        "prompt",
-        nargs="?",
-        help="The prompt to send to the BMAD pipeline.",
-    )
+    parser.add_argument("prompt", nargs="?", help="The prompt to send to the BMAD pipeline.")
     parser.add_argument(
         "--mode", "-m",
         default="auto",
         choices=["auto", "streamlit_crud", "fastapi_rag"],
-        help="Project mode (default: auto — pipeline decides).",
+        help="Project mode (default: auto).",
     )
     parser.add_argument(
         "--item", "-i",
         default="",
-        help="BMAD sprint item label, e.g. 'story-1-2' (optional, for tracking).",
+        help="BMAD sprint item label, e.g. 'story-1-2' (optional).",
     )
     parser.add_argument(
         "--status", "-s",
         action="store_true",
-        help="Show current agent loop status and exit.",
+        help="Show current orchestrator status and exit.",
     )
 
     args = parser.parse_args()
