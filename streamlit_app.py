@@ -1327,6 +1327,15 @@ def _render_results(final_state: dict):
             )
             cx_color = "#10B981" if cx <= 4 else ("#F59E0B" if cx <= 7 else "#EF4444")
             override = final_state.get("complexity_model_override")
+            a2a_used = final_state.get("a2a_used", False)
+            route_label = "⚡ A2A → project_final_final" if a2a_used else "🔄 Full BMAD Pipeline"
+            route_color = "#6366F1" if a2a_used else "#0EA5E9"
+            route_bg    = "#EEF2FF" if a2a_used else "#E0F2FE"
+            route_note  = (
+                "Simple prompt — routed to project_final_final microservice"
+                if a2a_used else
+                "Complex prompt — ran full BMAD pipeline"
+            )
             st.markdown(
                 f"""
                 <div class="stat-card" style="display:inline-flex;align-items:center;gap:1.5rem;width:100%">
@@ -1338,6 +1347,19 @@ def _render_results(final_state: dict):
                     {final_state.get('complexity_reason') or 'N/A'}
                     {"<br><span style='color:#6366F1;font-weight:600;font-size:0.78rem'>Light model used — tokens saved</span>" if override else ""}
                   </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"""
+                <div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+                  <span style="font-size:0.7rem;font-weight:700;color:#64748B;
+                               letter-spacing:0.08em;text-transform:uppercase">Route</span>
+                  <span style="background:{route_bg};color:{route_color};border:1px solid {route_color};
+                               border-radius:20px;padding:0.22rem 0.85rem;
+                               font-size:0.8rem;font-weight:700">{route_label}</span>
+                  <span style="font-size:0.78rem;color:#64748B">{route_note}</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1625,6 +1647,12 @@ if st.session_state["error"]:
 
 if st.session_state["final_state"]:
     elapsed_total = time.time() - (st.session_state.get("start_time") or time.time())
+    _fs          = st.session_state["final_state"]
+    _a2a         = _fs.get("a2a_used", False)
+    _cx          = _fs.get("complexity_score", "?")
+    _route_label = "⚡ A2A → project_final_final" if _a2a else "🔄 Full BMAD Pipeline"
+    _route_color = "#6366F1" if _a2a else "#0EA5E9"
+    _route_bg    = "#EEF2FF" if _a2a else "#E0F2FE"
     st.markdown(
         f"""
         <div style="background:linear-gradient(135deg,#ECFDF5,#D1FAE5);
@@ -1632,9 +1660,18 @@ if st.session_state["final_state"]:
                     padding:0.85rem 1.4rem;margin:1rem 0;
                     display:flex;align-items:center;gap:0.75rem">
           <span style="font-size:1.3rem">✅</span>
-          <div>
+          <div style="flex:1">
             <div style="font-weight:700;color:#065F46">Pipeline complete</div>
             <div style="font-size:0.78rem;color:#047857">Finished in {elapsed_total:.1f}s</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.3rem">
+            <span style="background:{_route_bg};color:{_route_color};border:1px solid {_route_color};
+                         border-radius:20px;padding:0.2rem 0.8rem;font-size:0.78rem;font-weight:700">
+              {_route_label}
+            </span>
+            <span style="font-size:0.72rem;color:#64748B">
+              Complexity score: <strong style="color:{_route_color}">{_cx}/10</strong>
+            </span>
           </div>
         </div>
         """,
