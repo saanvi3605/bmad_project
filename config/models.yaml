@@ -82,6 +82,10 @@ complexity_scorer:
   simple_threshold: 4
   # Model to use when the prompt is deemed simple.
   simple_model: llama-3.1-8b-instant
+  # Prompts scoring at or below this threshold are routed to project_final_final
+  # via A2A instead of running the full BMAD pipeline. Scored on the RAW prompt
+  # (before PromptRefiner) so natural scores like 1-3 correctly trigger A2A.
+  a2a_threshold: 4
 
 # ── Observability / cost tracking ────────────────────────────────────────────
 #

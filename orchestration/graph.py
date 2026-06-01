@@ -5,9 +5,9 @@ LangGraph StateGraph construction — full BMAD pipeline.
 
 Pipeline topology:
 
-                                    ┌─ score ≤ 4 ──→ SimpleGenerator (A2A) ──┐
-  PromptRefiner → ComplexityScorer ─┤                                         ↓
-                                    └─ score > 4 ──→ Planner → Architect → Developer → Validator
+                                    ┌─ score ≤ 4 ──→ SimpleGenerator (A2A) ──────────────────────┐
+  ComplexityScorer ─────────────────┤                                                             ↓
+                                    └─ score > 4 ──→ PromptRefiner → Planner → Architect → Developer → Validator
                                                                                   ↑         │
                                                                  runtime_fix      │  passed / max_attempts
                                                                     └─────────────┘         │
@@ -29,11 +29,11 @@ Three feedback loops:
   2. Reviewer  ↔ Developer  (LLM quality gate — 8 correctness criteria)
   3. Executor  → Developer  (runtime self-healing — app crash stderr)
 
-A2A routing:
-  ComplexityScorer scores the prompt 1-10. Score ≤ simple_threshold (config) routes
-  to SimpleGenerator which calls project_final_final via HTTP (POST /generate).
-  Score > threshold runs the full BMAD pipeline as normal.
-  Threshold is set in config/models.yaml::complexity_scorer.simple_threshold (default 4).
+A2A routing (ComplexityScorer runs FIRST on the raw prompt):
+  Score ≤ a2a_threshold → SimpleGenerator calls project_final_final via HTTP.
+  Score >  a2a_threshold → PromptRefiner expands the prompt, then full pipeline runs.
+  Scoring the raw prompt (before PromptRefiner) gives natural low scores for
+  genuinely simple requests. Threshold in config/models.yaml::complexity_scorer.a2a_threshold.
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -72,7 +72,7 @@ def _should_use_a2a(state: dict) -> str:
     """
     score     = state.get("complexity_score", 5)
     cfg       = get_config()
-    threshold = int(cfg.get("complexity_scorer", {}).get("simple_threshold", 4))
+    threshold = int(cfg.get("complexity_scorer", {}).get("a2a_threshold", 7))
     return "simple" if score <= threshold else "complex"
 
 
@@ -96,24 +96,27 @@ workflow.add_node("TestWriter",    test_writer_agent)
 workflow.add_node("ReadmeWriter",  readme_agent)
 workflow.add_node("EvalAgent",     eval_agent)
 
-workflow.set_entry_point("PromptRefiner")
+workflow.set_entry_point("ComplexityScorer")
 
-workflow.add_edge("PromptRefiner",    "ComplexityScorer")
-
-# A2A routing: simple prompts → project_final_final service; complex → full pipeline
+# A2A routing on RAW prompt (before PromptRefiner expands it):
+#   simple → A2A call to project_final_final (which has its own Planner/Architect)
+#   complex → PromptRefiner → full BMAD pipeline
 workflow.add_conditional_edges(
     "ComplexityScorer",
     _should_use_a2a,
     {
         "simple":  "SimpleGenerator",  # score ≤ threshold → A2A call
-        "complex": "Planner",          # score >  threshold → full BMAD pipeline
+        "complex": "PromptRefiner",    # score >  threshold → refine then full pipeline
     },
 )
 
-# SimpleGenerator skips Planner/Architect/Developer — jumps straight to Validator
-workflow.add_edge("SimpleGenerator", "Validator")
+# SimpleGenerator skips PromptRefiner/Planner/Architect/Developer/Validator/Tester/Reviewer
+# — project_final_final already ran all of those internally. Go straight to Executor
+# so BMAD just archives, runs, and evaluates the returned code.
+workflow.add_edge("SimpleGenerator", "Executor")
 
-workflow.add_edge("Planner",          "Architect")
+workflow.add_edge("PromptRefiner", "Planner")
+workflow.add_edge("Planner",       "Architect")
 workflow.add_edge("Architect",     "Developer")
 
 # Developer → Validator → fix loop — preserved verbatim
