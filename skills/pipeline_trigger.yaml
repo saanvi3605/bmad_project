@@ -1,0 +1,63 @@
+# skills/pipeline_trigger.yaml
+# BMAD Skill Definition — Pipeline Trigger
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: Orchestrator agent (agent_loop.py)
+# CLI:     trigger_run.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: pipeline_trigger
+version: "1.0"
+display_name: "BMAD Pipeline Trigger"
+description: >
+  Writes a run request to the shared control.yaml event bus, which the
+  Orchestrator agent picks up within POLL_INTERVAL seconds and executes
+  as a full BMAD pipeline run. Implements the choreography trigger pattern.
+
+agents:
+  - orchestrator
+
+inputs:
+  prompt:
+    type: str
+    required: true
+    description: "Natural language description of the app to build"
+  project_mode:
+    type: str
+    required: false
+    default: "auto"
+    description: "auto | streamlit_crud | fastapi_rag"
+  sprint_item:
+    type: str
+    required: false
+    default: ""
+    description: "Optional BMAD sprint item label for tracking (e.g. story-1-2)"
+
+outputs:
+  control_yaml:
+    type: file
+    path: control.yaml
+    description: >
+      Updated event bus file with run=true, prompt, and project_mode set.
+      The Orchestrator agent reads this and starts the pipeline.
+
+event_bus:
+  file: control.yaml
+  lock_file: control.yaml.lock
+  lock_timeout_seconds: 5
+  trigger_field: run
+  trigger_value: true
+
+guards:
+  - condition: "status == 'running'"
+    action: abort
+    message: "Pipeline is already running. Wait for it to finish."
+  - condition: "run == true"
+    action: abort
+    message: "A run is already queued. Wait for it to start."
+
+cli_usage:
+  command: "python trigger_run.py"
+  examples:
+    - 'python trigger_run.py "Build a recipe manager app"'
+    - 'python trigger_run.py "Build a RAG service for PDFs" --mode fastapi_rag'
+    - 'python trigger_run.py --status'

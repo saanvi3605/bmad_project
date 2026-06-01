@@ -46,6 +46,7 @@ RULES (all mandatory):
 - For integer inputs (marks, counts, quantities, IDs) always use format="%d" and step=1 — NEVER format="%.2f"
 - Only use format="%.2f" for currency or decimal inputs like prices, rates, and ratios
 - SQLite table names must use snake_case — never spaces (e.g. menu_items not "Menu Items", order_details not "Order Details")
+- In init_db(), after all CREATE TABLE IF NOT EXISTS statements, seed the database with 10-15 realistic sample records using INSERT OR IGNORE INTO so the app starts with a ready, populated database. Use real-world data — for a library: actual book titles and authors; for a restaurant: real menu items with prices; for a school: real subject names and grades. NEVER use placeholders like "Sample 1", "Item 1", "Test Record".
 
 COMMON MISTAKES — every item below has broken generated apps before. Do NOT repeat them:
 

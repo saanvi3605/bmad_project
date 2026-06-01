@@ -37,13 +37,16 @@ _TEST_DB_NAME = "test_library.db"
 # ---------------------------------------------------------------------------
 
 def _extract_create_stmts(code: str) -> list[str]:
-    """Return all CREATE TABLE SQL strings found inside cursor.execute() calls."""
+    """Return all CREATE TABLE SQL strings found inside any .execute() calls."""
     stmts: list[str] = []
+    # Match any variable name (conn, cursor, c, db, …) followed by .execute("""...""")
     for pattern in [
-        r'cursor\.execute\s*\(\s*"""(.*?)"""\s*\)',
-        r"cursor\.execute\s*\(\s*'''(.*?)'''\s*\)",
+        r'\w+\.execute\s*\(\s*"""(.*?)"""\s*\)',
+        r"\w+\.execute\s*\(\s*'''(.*?)'''\s*\)",
+        r'\w+\.execute\s*\(\s*"(CREATE\s+TABLE[^"]+)"\s*\)',
+        r"\w+\.execute\s*\(\s*'(CREATE\s+TABLE[^']+)'\s*\)",
     ]:
-        for m in re.finditer(pattern, code, re.DOTALL):
+        for m in re.finditer(pattern, code, re.DOTALL | re.IGNORECASE):
             sql = m.group(1).strip()
             if re.search(r'CREATE\s+TABLE', sql, re.IGNORECASE):
                 stmts.append(sql)
