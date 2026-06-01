@@ -67,6 +67,9 @@ class BMADState(TypedDict):
     project_mode: Optional[str]        # "streamlit_crud" | "fastapi_rag"
     extra_files: Optional[dict]        # {filename: content} for multi-file RAG output
 
+    # ── A2A routing ─────────────────────────────────────────────────────────
+    a2a_used: Optional[bool]           # True when code came from project_final_final service
+
 
 # Backward-compatibility alias — keeps ``from state import AgentState`` working
 AgentState = BMADState

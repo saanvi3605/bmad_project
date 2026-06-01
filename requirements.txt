@@ -20,6 +20,7 @@ python-dotenv>=1.0.0
 # ── Config / utilities ────────────────────────────────────────────────────────
 pyyaml>=6.0.0
 filelock>=3.12.0
+requests>=2.31.0
 
 # ── Code style (applied by sanitizer to every generated app) ─────────────────
 black>=24.0.0
