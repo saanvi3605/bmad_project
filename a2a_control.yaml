@@ -1,0 +1,10 @@
+request:
+  status: idle       # idle | pending | running | complete | failed
+  prompt: ""
+  requested_at: null
+result:
+  code: ""
+  technical_design: ""
+  functional_spec: ""
+  error: ""
+  completed_at: null

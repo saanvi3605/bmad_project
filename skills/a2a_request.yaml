@@ -1,0 +1,63 @@
+# skills/a2a_request.yaml
+# BMAD Skill Definition — A2A Choreography Request
+# ─────────────────────────────────────────────────────────────────────────────
+# Used by: SimpleGenerator agent (agents_impl/a2a_client.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+skill_id: a2a_request
+version: "1.0"
+display_name: "A2A Choreography Request"
+description: >
+  Writes a generation request to the shared A2A event bus (a2a_control.yaml)
+  and polls until project_final_final's orchestrator writes the result back.
+  Implements the choreography trigger pattern for cross-pipeline communication.
+
+agents:
+  - simple_generator
+
+inputs:
+  prompt:
+    type: str
+    required: true
+    description: "Raw user prompt (before PromptRefiner expansion)"
+  complexity_score:
+    type: int
+    required: true
+    description: "Score from ComplexityScorer; must be ≤ a2a_threshold to reach this skill"
+
+outputs:
+  code:
+    type: str
+    description: "Generated Streamlit app code from project_final_final"
+  technical_design:
+    type: str
+    description: "Architecture spec from project_final_final"
+  functional_spec:
+    type: str
+    description: "Requirements spec from project_final_final"
+  a2a_used:
+    type: bool
+    description: "Always True when this skill is invoked"
+
+event_bus:
+  file: a2a_control.yaml
+  lock_file: a2a_control.yaml.lock
+  lock_timeout_seconds: 5
+  request_field: request.status
+  pending_value: pending
+  complete_value: complete
+  failed_value: failed
+
+polling:
+  interval_seconds: 5
+  timeout_seconds: 300
+
+guards:
+  - condition: "request.status in ('pending', 'running')"
+    action: abort
+    message: "A2A event bus is busy. Another request is already in progress."
+
+env_overrides:
+  A2A_CONTROL_FILE: "Override path to a2a_control.yaml"
+  A2A_TIMEOUT: "Max seconds to wait for result (default: 300)"
+  A2A_POLL_INTERVAL: "Seconds between status checks (default: 5)"
