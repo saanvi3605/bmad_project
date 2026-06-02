@@ -1174,7 +1174,10 @@ def _render_compare_tab(final_state: dict) -> None:
         return
 
     df_hist["route"] = df_hist["a2a_used"].apply(
-        lambda x: "⚡ A2A" if x else "🔄 Full Pipeline"
+        lambda x: "⚡ A2A" if (x is not None and str(x) not in ("", "nan", "0", "0.0") and float(x) == 1) else "🔄 Full Pipeline"
+    )
+    df_hist["complexity_score"] = df_hist["complexity_score"].apply(
+        lambda x: int(float(x)) if (x is not None and str(x) not in ("", "nan")) else "—"
     )
     df_hist["latency_s"] = (df_hist["total_latency_ms"] / 1000).round(1)
     df_hist["cost_fmt"]  = df_hist["total_cost_usd"].apply(lambda x: f"${x:.5f}")
