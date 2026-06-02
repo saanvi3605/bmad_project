@@ -439,10 +439,16 @@ def init_history_db() -> None:
                 created_at       TEXT    DEFAULT (datetime('now'))
             )
         """)
-        try:
-            conn.execute("ALTER TABLE runs ADD COLUMN refined_prompt TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for col_sql in [
+            "ALTER TABLE runs ADD COLUMN refined_prompt TEXT",
+            "ALTER TABLE runs ADD COLUMN complexity_score INTEGER",
+            "ALTER TABLE runs ADD COLUMN a2a_used INTEGER",
+            "ALTER TABLE runs ADD COLUMN agent_log_json TEXT",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
         conn.commit()
         conn.close()
     except Exception:
@@ -455,10 +461,18 @@ def save_run_to_history(
     error: Optional[str],
 ) -> None:
     try:
+        import json as _json
         from core.observability import get_pipeline_summary
         summary = get_pipeline_summary(final_state) if final_state else None
         status = "complete" if final_state and not error else "failed"
         fs = final_state or {}
+
+        # Serialise agent_log for per-agent comparative analysis
+        agent_log = fs.get("agent_log") or []
+        agent_log_json = _json.dumps(
+            [r.to_dict() if hasattr(r, "to_dict") else r for r in agent_log]
+        )
+
         conn = sqlite3.connect(_HISTORY_DB)
         conn.execute("""
             INSERT INTO runs (
@@ -466,8 +480,9 @@ def save_run_to_history(
                 functional_spec, technical_design,
                 code, test_cases, review_feedback, review_approved, validation_passed,
                 execution_result, execution_error, test_file_path,
-                total_tokens, total_cost_usd, total_latency_ms, agents_called
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_tokens, total_cost_usd, total_latency_ms, agents_called,
+                complexity_score, a2a_used, agent_log_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             fs.get("session_id", ""),
             original_prompt,
@@ -487,6 +502,9 @@ def save_run_to_history(
             summary.total_cost_usd if summary else 0.0,
             summary.total_latency_ms if summary else 0.0,
             ",".join(summary.agents_called) if summary else "",
+            fs.get("complexity_score"),
+            int(bool(fs.get("a2a_used"))),
+            agent_log_json,
         ))
         conn.commit()
         conn.close()
@@ -1056,13 +1074,211 @@ def _render_eval_scores(eval_scores: dict):
         )
 
 
+def _render_compare_tab(final_state: dict) -> None:
+    """Comparative analysis: per-agent breakdown + historical run comparison."""
+    import json as _json
+    import pandas as pd
+    import plotly.express as px
+
+    st.markdown(
+        '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+        'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1rem">'
+        'Current Run — Per-Agent Breakdown</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Per-agent breakdown from current run ──────────────────────────────────
+    agent_log = final_state.get("agent_log") or []
+    if agent_log:
+        rows = [r.to_dict() if hasattr(r, "to_dict") else r for r in agent_log]
+        df_agents = pd.DataFrame(rows)
+
+        # Aggregate by agent (may be called multiple times in fix loops)
+        df_agg = (
+            df_agents.groupby("agent_name")
+            .agg(
+                total_tokens=("total_tokens", "sum"),
+                input_tokens=("input_tokens", "sum"),
+                output_tokens=("output_tokens", "sum"),
+                cost_usd=("cost_usd", "sum"),
+                latency_ms=("latency_ms", "sum"),
+                calls=("agent_name", "count"),
+            )
+            .reset_index()
+            .sort_values("total_tokens", ascending=False)
+        )
+
+        col_chart, col_table = st.columns([3, 2])
+        with col_chart:
+            fig = px.bar(
+                df_agg, x="agent_name", y="total_tokens",
+                color="total_tokens",
+                color_continuous_scale="Blues",
+                labels={"agent_name": "Agent", "total_tokens": "Tokens"},
+                title="Tokens per Agent",
+                height=320,
+            )
+            fig.update_layout(
+                showlegend=False, coloraxis_showscale=False,
+                margin=dict(l=0, r=0, t=40, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_table:
+            st.dataframe(
+                df_agg.rename(columns={
+                    "agent_name": "Agent",
+                    "total_tokens": "Tokens",
+                    "cost_usd": "Cost ($)",
+                    "latency_ms": "Latency (ms)",
+                    "calls": "Calls",
+                }).style.format({
+                    "Cost ($)": "{:.6f}",
+                    "Latency (ms)": "{:.0f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=320,
+            )
+    else:
+        st.info("No per-agent data for this run.")
+
+    st.markdown('<hr style="border:none;border-top:1px solid #E2E8F0;margin:1.5rem 0"/>', unsafe_allow_html=True)
+
+    # ── Historical comparison ─────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+        'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:1rem">'
+        'Historical Run Comparison</div>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        conn = sqlite3.connect(_HISTORY_DB)
+        df_hist = pd.read_sql_query(
+            """SELECT id, prompt, complexity_score, a2a_used,
+                      total_tokens, total_cost_usd, total_latency_ms,
+                      agents_called, validation_passed, review_approved,
+                      status, created_at
+               FROM runs ORDER BY id DESC LIMIT 20""",
+            conn,
+        )
+        conn.close()
+    except Exception:
+        st.info("No history available yet.")
+        return
+
+    if df_hist.empty:
+        st.info("No past runs recorded yet.")
+        return
+
+    df_hist["route"] = df_hist["a2a_used"].apply(
+        lambda x: "⚡ A2A" if x else "🔄 Full Pipeline"
+    )
+    df_hist["latency_s"] = (df_hist["total_latency_ms"] / 1000).round(1)
+    df_hist["cost_fmt"]  = df_hist["total_cost_usd"].apply(lambda x: f"${x:.5f}")
+    df_hist["prompt_short"] = df_hist["prompt"].str[:50] + "…"
+
+    # Summary comparison table
+    st.dataframe(
+        df_hist[["id", "prompt_short", "complexity_score", "route",
+                 "total_tokens", "cost_fmt", "latency_s",
+                 "validation_passed", "review_approved", "status", "created_at"
+                 ]].rename(columns={
+            "id": "#", "prompt_short": "Prompt", "complexity_score": "Score",
+            "route": "Route", "total_tokens": "Tokens", "cost_fmt": "Cost",
+            "latency_s": "Latency (s)", "validation_passed": "Valid",
+            "review_approved": "Reviewed", "status": "Status", "created_at": "Time",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    c1, c2 = st.columns(2)
+
+    with c1:
+        df_plot = df_hist.dropna(subset=["complexity_score"])
+        if not df_plot.empty:
+            fig2 = px.scatter(
+                df_plot, x="complexity_score", y="total_tokens",
+                color="route", size="latency_s",
+                hover_data=["prompt_short", "cost_fmt"],
+                labels={"complexity_score": "Complexity Score", "total_tokens": "Total Tokens", "route": "Route"},
+                title="Complexity Score vs Token Usage",
+                height=320,
+                color_discrete_map={"⚡ A2A": "#6366F1", "🔄 Full Pipeline": "#0EA5E9"},
+            )
+            fig2.update_layout(
+                margin=dict(l=0, r=0, t=40, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("Not enough data for scatter chart yet.")
+
+    with c2:
+        df_route = df_hist.groupby("route").agg(
+            avg_tokens=("total_tokens", "mean"),
+            avg_latency=("latency_s", "mean"),
+            avg_cost=("total_cost_usd", "mean"),
+            count=("id", "count"),
+        ).reset_index()
+        if not df_route.empty:
+            fig3 = px.bar(
+                df_route, x="route", y="avg_tokens",
+                color="route",
+                text="count",
+                labels={"route": "Route", "avg_tokens": "Avg Tokens", "count": "Runs"},
+                title="A2A vs Full Pipeline — Avg Token Usage",
+                height=320,
+                color_discrete_map={"⚡ A2A": "#6366F1", "🔄 Full Pipeline": "#0EA5E9"},
+            )
+            fig3.update_traces(texttemplate="%{text} runs", textposition="outside")
+            fig3.update_layout(
+                showlegend=False,
+                margin=dict(l=0, r=0, t=40, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+    # ── A2A vs Full Pipeline summary stats ────────────────────────────────────
+    if len(df_route) > 1:
+        st.markdown('<hr style="border:none;border-top:1px solid #E2E8F0;margin:1rem 0"/>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.7rem;font-weight:700;color:#64748B;'
+            'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.75rem">'
+            'Route Summary</div>',
+            unsafe_allow_html=True,
+        )
+        for _, row in df_route.iterrows():
+            color = "#6366F1" if "A2A" in row["route"] else "#0EA5E9"
+            st.markdown(
+                f"""<div style="background:#F8FAFC;border:1px solid #E2E8F0;
+                        border-left:4px solid {color};border-radius:8px;
+                        padding:0.75rem 1rem;margin-bottom:0.5rem;
+                        display:flex;gap:2rem;align-items:center">
+                  <span style="font-weight:700;color:{color};min-width:140px">{row['route']}</span>
+                  <span style="font-size:0.82rem;color:#475569">
+                    <strong>{int(row['count'])}</strong> runs &nbsp;·&nbsp;
+                    avg <strong>{int(row['avg_tokens']):,}</strong> tokens &nbsp;·&nbsp;
+                    avg <strong>{row['avg_latency']:.1f}s</strong> &nbsp;·&nbsp;
+                    avg <strong>${row['avg_cost']:.5f}</strong>
+                  </span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+
 def _render_results(final_state: dict):
-    tab_code, tab_tests, tab_exec, tab_log, tab_obs, tab_hist = st.tabs([
+    tab_code, tab_tests, tab_exec, tab_log, tab_obs, tab_compare, tab_hist = st.tabs([
         "📄 Code",
         "🧪 Tests",
         "▶️ Execution",
         "📋 Agent Log",
         "📊 Observability",
+        "📈 Compare",
         "📜 History",
     ])
 
@@ -1385,7 +1601,11 @@ def _render_results(final_state: dict):
             "Langfuse dashboard when LANGFUSE_PUBLIC_KEY / SECRET_KEY are set."
         )
 
-    # ── Tab 6: History ────────────────────────────────────────────────────
+    # ── Tab 6: Comparative Analysis ───────────────────────────────────────
+    with tab_compare:
+        _render_compare_tab(final_state)
+
+    # ── Tab 7: History ────────────────────────────────────────────────────
     with tab_hist:
         _render_history_tab()
 

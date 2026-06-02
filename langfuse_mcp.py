@@ -370,6 +370,104 @@ def ask_langfuse(question: str, days: int = 7) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool 6 — Comparative analysis across pipeline runs
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def compare_runs(days: int = 7, limit: int = 10) -> str:
+    """
+    Compare recent pipeline runs side by side: per-agent token/cost breakdown,
+    A2A vs Full Pipeline averages, and complexity score impact on token usage.
+
+    Best for questions like:
+      "Which agent uses the most tokens?"
+      "How does A2A compare to the full pipeline in cost?"
+      "What's the difference in token usage at different complexity scores?"
+      "Show me a breakdown of each agent's cost across recent runs"
+      "Compare my last 10 runs"
+    """
+    from_dt, to_dt = _date_range(days)
+
+    # Fetch recent traces
+    traces_data = _api_get("/api/public/traces", {
+        "limit": min(limit, 50),
+        "page": 1,
+    })
+    traces = traces_data.get("data", [])
+
+    if not traces:
+        return "No traces found in Langfuse."
+
+    # Fetch observations (per-agent generations) for the date range
+    obs_data = _api_get("/api/public/observations", {
+        "limit": 100,
+        "page": 1,
+        "fromStartTime": from_dt,
+        "toStartTime": to_dt,
+        "type": "GENERATION",
+    })
+    observations = obs_data.get("data", [])
+
+    # ── Per-agent aggregation ─────────────────────────────────────────────
+    agent_stats: dict[str, dict] = {}
+    for obs in observations:
+        name = (obs.get("name") or "unknown").lower()
+        usage = obs.get("usage") or {}
+        inp   = usage.get("input") or 0
+        out   = usage.get("output") or 0
+        cost  = float(obs.get("calculatedTotalCost") or 0.0)
+        s = agent_stats.setdefault(name, {"input": 0, "output": 0, "total": 0, "cost": 0.0, "calls": 0})
+        s["input"]  += inp
+        s["output"] += out
+        s["total"]  += inp + out
+        s["cost"]   += cost
+        s["calls"]  += 1
+
+    lines = [
+        f"Comparative run analysis — last {days} day(s)  ({from_dt[:10]} → {to_dt[:10]})",
+        f"Traces analysed: {len(traces)}   |   Generations analysed: {len(observations)}",
+        "",
+    ]
+
+    # ── Per-agent breakdown ───────────────────────────────────────────────
+    if agent_stats:
+        lines.append("Per-agent token & cost breakdown (aggregated):")
+        lines.append(f"  {'Agent':<28}  {'Calls':>5}  {'Input':>8}  {'Output':>8}  {'Total':>9}  {'Cost':>10}")
+        lines.append("  " + "-" * 76)
+        for agent, s in sorted(agent_stats.items(), key=lambda x: -x[1]["total"]):
+            lines.append(
+                f"  {agent:<28}  {s['calls']:>5}  {s['input']:>8,}  {s['output']:>8,}"
+                f"  {s['total']:>9,}  ${s['cost']:>9.5f}"
+            )
+        lines.append("")
+
+    # ── Trace-level summary (complexity + cost per run) ───────────────────
+    lines.append("Recent traces (newest first):")
+    lines.append(f"  {'#':<4}  {'Timestamp':<20}  {'Name':<28}  {'Tokens':>8}  {'Cost':>8}  {'Latency':>8}")
+    lines.append("  " + "-" * 86)
+    for i, t in enumerate(traces[:limit], 1):
+        ts      = (t.get("timestamp") or "")[:19].replace("T", " ")
+        name    = (t.get("name") or "unnamed")[:27]
+        usage   = t.get("usage") or {}
+        tokens  = usage.get("totalTokens") or usage.get("total") or 0
+        cost    = usage.get("totalCost") or 0.0
+        latency = t.get("latency")
+        lat_str = f"{latency/1000:.1f}s" if latency else "—"
+        lines.append(f"  {i:<4}  {ts:<20}  {name:<28}  {tokens:>8,}  ${cost:>7.5f}  {lat_str:>8}")
+
+    lines.append("")
+
+    # ── Key insight: most expensive agent ─────────────────────────────────
+    if agent_stats:
+        top_agent = max(agent_stats.items(), key=lambda x: x[1]["cost"])
+        top_tokens = max(agent_stats.items(), key=lambda x: x[1]["total"])
+        lines.append(f"Most expensive agent : {top_agent[0]}  (${top_agent[1]['cost']:.5f} total)")
+        lines.append(f"Highest token usage  : {top_tokens[0]}  ({top_tokens[1]['total']:,} tokens across {top_tokens[1]['calls']} calls)")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
